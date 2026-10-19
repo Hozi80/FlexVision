@@ -4,8 +4,8 @@ using System.Windows.Forms;
 using System.Collections.Generic;
 using Emgu.CV;
 using Emgu.CV.Structure;
-
 using Cyotek.Windows.Forms.Demo;
+using Cyotek.Windows.Forms;
 
 namespace FlexVision
 {
@@ -17,17 +17,26 @@ namespace FlexVision
         private readonly Color Color_Text = Color.FromArgb(240, 240, 240);
         private readonly Color Color_Cyan = Color.FromArgb(0, 215, 255);
 
-        // --- OSZTÁLY SZINTŰ DEKLARÁCIÓK (Így minden belső metódus garantáltan látja őket!) ---
         private ListBox listBoxPipeline;
-        private PropertyGrid propertyGridModuleParams;
-        private ImageBoxEx imageBoxExMain; // A te Cyotek alapú nagyítható képmeződ
 
+        // KÉTOSZTATÚ PARAMÉTER JELENTŐK
+        private PropertyGrid propertyGridCommon;
+        private Panel panelSpecificContainer;
+
+        private ImageBoxEx imageBoxExMain;
         private SplitContainer splitLeft;
         private SplitContainer splitRight;
+        private SplitContainer splitParamsContainer;
 
         private Panel panelToolbar;
         private Button btnNew, btnSave, btnRunAll;
         private Button btnAdd, btnDelete;
+
+        // ÚJ: Felugró menü a modulok kiválasztásához beszúráskor
+        private ContextMenuStrip menuAddModule;
+
+        private bool _isSelectingTemplate = false;
+        private bool _isSelectingRoi = false;
 
         public List<IInspectionModule> PipelineSteps { get; private set; } = new List<IInspectionModule>();
 
@@ -36,19 +45,20 @@ namespace FlexVision
             this.BackColor = Color_Bg;
             this.Dock = DockStyle.Fill;
             InitializeComponent();
-            CreateDefaultPipeline();
+            InitializeAddMenu(); // Menü felépítése
+            CreateDefaultPipeline(); // Kezdőállapot: Csak Source Capture
         }
 
         private void InitializeComponent()
         {
-            // 1. HASÁBOK LÉTREHOZÁSA MINIMÁLIS MÉRETEK NÉLKÜL (A fagyás és InvalidOp ellen)
+            // HASÁBOK STRUKTÚRÁJA
             splitLeft = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Vertical, SplitterDistance = 270, BackColor = Color_Bg, FixedPanel = FixedPanel.Panel1 };
             splitRight = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Vertical, SplitterDistance = 600, BackColor = Color_Bg, FixedPanel = FixedPanel.Panel2 };
 
             this.Controls.Add(splitLeft);
             splitLeft.Panel2.Controls.Add(splitRight);
 
-            // Dinamikus méretezés indításkor és maximalizáláskor
+            // Dinamikus méretezés és kényszerített minimumok
             this.Resize += (s, e) => {
                 if (this.Width > 650)
                 {
@@ -62,11 +72,12 @@ namespace FlexVision
                 }
             };
 
-            // BAL OLDALI 3-AS GOMBSOR
+            // BAL OLDALI BAR GOMBOK
             panelToolbar = new Panel { Dock = DockStyle.Top, Height = 50, BackColor = Color_Slate };
 
             btnNew = new Button { Text = "📄 NEW", Location = new Point(6, 10), Width = 83, Height = 30, FlatStyle = FlatStyle.Flat, ForeColor = Color_Cyan, BackColor = Color_Light, Font = new Font("Segoe UI", 7.5f, FontStyle.Bold), Cursor = Cursors.Hand };
             btnNew.FlatAppearance.BorderSize = 0;
+            // JAVÍTÁS 1: A NEW gomb most már teljesen letakarítja a láncot és CSAK a Source Image Capture marad!
             btnNew.Click += (s, e) => { CreateDefaultPipeline(); RefreshUI(); };
 
             btnSave = new Button { Text = "💾 SAVE", Location = new Point(93, 10), Width = 83, Height = 30, FlatStyle = FlatStyle.Flat, ForeColor = Color_Text, BackColor = Color_Light, Font = new Font("Segoe UI", 7.5f, FontStyle.Bold), Cursor = Cursors.Hand };
@@ -79,7 +90,7 @@ namespace FlexVision
 
             panelToolbar.Controls.Add(btnNew); panelToolbar.Controls.Add(btnSave); panelToolbar.Controls.Add(btnRunAll);
 
-            // BAL OLDALI FOLYAMATLISTA
+            // BAL OLDALI LISTA FOLYAMAT
             Panel pListHeader = new Panel { Dock = DockStyle.Top, Height = 30, BackColor = Color_Light };
             pListHeader.Controls.Add(new Label { Text = "PIPELINE STEPS", ForeColor = Color_Text, Font = new Font("Segoe UI", 8, FontStyle.Bold), Location = new Point(10, 8) });
 
@@ -87,16 +98,17 @@ namespace FlexVision
             listBoxPipeline.DrawItem += ListBoxPipeline_DrawItem;
             listBoxPipeline.SelectedIndexChanged += ListBoxPipeline_SelectedIndexChanged;
 
+            // ALSÓ FUNKCIÓGOMBOK
             Panel pListButtons = new Panel { Dock = DockStyle.Bottom, Height = 40, BackColor = Color_Slate };
-            btnAdd = new Button { Text = "[ + ADD STEP ]", Width = 125, Height = 28, Location = new Point(6, 6), FlatStyle = FlatStyle.Flat, BackColor = Color_Light, ForeColor = Color_Cyan, Font = new Font("Segoe UI", 8, FontStyle.Bold) };
-            btnDelete = new Button { Text = "[ - REMOVE ]", Width = 125, Height = 28, Location = new Point(135, 6), FlatStyle = FlatStyle.Flat, BackColor = Color_Light, ForeColor = Color.FromArgb(255, 120, 10), Font = new Font("Segoe UI", 8, FontStyle.Bold) };
+            btnAdd = new Button { Text = "[ + ADD STEP ]", Width = 125, Height = 28, Location = new Point(6, 6), FlatStyle = FlatStyle.Flat, BackColor = Color_Light, ForeColor = Color_Cyan, Font = new Font("Segoe UI", 8, FontStyle.Bold), Cursor = Cursors.Hand };
+            btnDelete = new Button { Text = "[ - REMOVE ]", Width = 125, Height = 28, Location = new Point(135, 6), FlatStyle = FlatStyle.Flat, BackColor = Color_Light, ForeColor = Color.FromArgb(255, 120, 10), Font = new Font("Segoe UI", 8, FontStyle.Bold), Cursor = Cursors.Hand };
 
-            // BEKÖTÉS: Az új Sablonkereső modul golyóálló hozzáadása
-            btnAdd.Click += (s, e) => {
-                PipelineSteps.Add(new TemplateMatchModule());
-                RefreshUI();
-                listBoxPipeline.SelectedIndex = listBoxPipeline.Items.Count - 1;
-            };
+            // JAVÍTÁS 2: Az ADD gombra kattintva feldobjuk a választható modulok listáját
+            btnAdd.Click += (s, e) => { menuAddModule.Show(btnAdd, new Point(0, btnAdd.Height)); };
+
+            // JAVÍTÁS 4: A REMOVE gomb törli az éppen kijelölt lépést a láncból (biztonsági guardraillel)
+            btnDelete.Click += BtnDelete_Click;
+
             pListButtons.Controls.Add(btnAdd); pListButtons.Controls.Add(btnDelete);
 
             splitLeft.Panel1.Controls.Add(listBoxPipeline);
@@ -108,120 +120,315 @@ namespace FlexVision
             Panel pImgHeader = new Panel { Dock = DockStyle.Top, Height = 30, BackColor = Color_Light };
             pImgHeader.Controls.Add(new Label { Text = "LIVE VIEW DEBUG", ForeColor = Color_Text, Font = new Font("Segoe UI", 8, FontStyle.Bold), Location = new Point(10, 8) });
 
-            imageBoxExMain = new ImageBoxEx { Dock = DockStyle.Fill, BackColor = Color.FromArgb(15, 15, 15) };
-            imageBoxExMain.Name = "imageBoxExMain";
+            imageBoxExMain = new ImageBoxEx { Dock = DockStyle.Fill, BackColor = Color.FromArgb(15, 15, 15), Name = "imageBoxExMain" };
             imageBoxExMain.GridColor = Color.FromArgb(55, 55, 55);
             imageBoxExMain.GridColorAlternate = Color.FromArgb(45, 45, 45);
-            
             imageBoxExMain.Selected += ImageBoxExMain_SelectionChanged;
+
             splitRight.Panel1.Controls.Add(imageBoxExMain);
             splitRight.Panel1.Controls.Add(pImgHeader);
+
+            // JOBB HASÁB: KÉTOSZTATÚ PARAMÉTER PANEL
+            splitParamsContainer = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 160, BackColor = Color_Bg, FixedPanel = FixedPanel.Panel1 };
+            splitRight.Panel2.Controls.Add(splitParamsContainer);
+
+            Panel pCommonHeader = new Panel { Dock = DockStyle.Top, Height = 28, BackColor = Color_Light };
+            pCommonHeader.Controls.Add(new Label { Text = "⚙️ COMMON CONFIGURATION (BEMENET / OFFSET)", ForeColor = Color_Cyan, Font = new Font("Segoe UI", 7.5f, FontStyle.Bold), Location = new Point(10, 6), AutoSize = true });
+            propertyGridCommon = new PropertyGrid { Dock = DockStyle.Fill, BackColor = Color_Bg, ViewBackColor = Color_Bg, ViewForeColor = Color_Text, LineColor = Color_Light, ToolbarVisible = false, HelpVisible = false, PropertySort = PropertySort.Categorized };
+            propertyGridCommon.PropertyValueChanged += (s, args) => RunPipelineDebug();
+            splitParamsContainer.Panel1.Controls.Add(propertyGridCommon);
+            splitParamsContainer.Panel1.Controls.Add(pCommonHeader);
+
+            panelSpecificContainer = new Panel { Dock = DockStyle.Fill, BackColor = Color_Bg };
+            splitParamsContainer.Panel2.Controls.Add(panelSpecificContainer);
         }
 
-        // --- DINAMIKUS HASÁB CSERE A LISTA KATTINTÁSKOR ---
+        private void InitializeAddMenu()
+        {
+            menuAddModule = new ContextMenuStrip { BackColor = Color_Slate, ForeColor = Color_Text, ShowImageMargin = false };
+
+            // --- KATEGÓRIA 1: TÉRBELI KÉPJAVÍTÁS (PIXEL-ALAPÚ) ---
+            var catSpatial = new ToolStripMenuItem("1. Pixel-alapú Képjavítás") { BackColor = Color_Slate, ForeColor = Color_Cyan };
+            catSpatial.DropDown.BackColor = Color_Slate; catSpatial.DropDown.ForeColor = Color_Text;
+
+            var mHist = new ToolStripMenuItem("Hisztogram Kiegyenlítés") { ForeColor = Color_Text }; mHist.Click += (s, e) => InsertModuleAtSelected(new HistogramEqualizationModule());
+            var mGamma = new ToolStripMenuItem("Gamma Korrekció") { ForeColor = Color_Text }; mGamma.Click += (s, e) => InsertModuleAtSelected(new GammaCorrectionModule());
+            var mThresh = new ToolStripMenuItem("Fix Küszöbölés (Threshold)") { ForeColor = Color_Text }; mThresh.Click += (s, e) => InsertModuleAtSelected(new SimpleThresholdModule());
+
+            catSpatial.DropDownItems.AddRange(new ToolStripItem[] { mHist, mGamma, mThresh });
+
+            // --- KATEGÓRIA 2: SIMÍTÓ ÉS ZAJCSÖKKENTŐ SZŰRŐK ---
+            var catBlur = new ToolStripMenuItem("2. Simító & Zajcsökkentő Szűrők") { BackColor = Color_Slate, ForeColor = Color_Cyan };
+            catBlur.DropDown.BackColor = Color_Slate; catBlur.DropDown.ForeColor = Color_Text;
+
+            var mBox = new ToolStripMenuItem("Box Filter (Átlagoló)") { ForeColor = Color_Text }; mBox.Click += (s, e) => InsertModuleAtSelected(new BoxFilterModule());
+            var mGauss = new ToolStripMenuItem("Gaussian Blur (Haranggörbe)") { ForeColor = Color_Text }; mGauss.Click += (s, e) => InsertModuleAtSelected(new GaussianBlurModule());
+            var mMedian = new ToolStripMenuItem("Median Filter (Só-bors szűrő)") { ForeColor = Color_Text }; mMedian.Click += (s, e) => InsertModuleAtSelected(new MedianFilterModule());
+            var mBilat = new ToolStripMenuItem("Bilateral Filter (Élmegőrző)") { ForeColor = Color_Text }; mBilat.Click += (s, e) => InsertModuleAtSelected(new BilateralFilterModule());
+
+            catBlur.DropDownItems.AddRange(new ToolStripItem[] { mBox, mGauss, mMedian, mBilat });
+
+            // --- KATEGÓRIA 3: ÉLESÍTŐ ÉS ÉLKERESŐK ---
+            var catEdges = new ToolStripMenuItem("3. Élesítő & Élkereső Szűrők") { BackColor = Color_Slate, ForeColor = Color_Cyan };
+            catEdges.DropDown.BackColor = Color_Slate; catEdges.DropDown.ForeColor = Color_Text;
+
+            var mSobel = new ToolStripMenuItem("Sobel Gradiens élkereső") { ForeColor = Color_Text }; mSobel.Click += (s, e) => InsertModuleAtSelected(new SobelFilterModule());
+            var mLaplace = new ToolStripMenuItem("Laplace másodrendű élkereső") { ForeColor = Color_Text }; mLaplace.Click += (s, e) => InsertModuleAtSelected(new LaplacianFilterModule());
+            var mCanny = new ToolStripMenuItem("Canny komplex élkereső") { ForeColor = Color_Text }; mCanny.Click += (s, e) => InsertModuleAtSelected(new CannyEdgeModule());
+            var mUnsharp = new ToolStripMenuItem("Unsharp Masking (Élesítés)") { ForeColor = Color_Text }; mUnsharp.Click += (s, e) => InsertModuleAtSelected(new UnsharpMaskingModule());
+
+            catEdges.DropDownItems.AddRange(new ToolStripItem[] { mSobel, mLaplace, mCanny, mUnsharp });
+
+            // --- KATEGÓRIA 4: MORFOLÓGIA ---
+            var catMorph = new ToolStripMenuItem("4. Morfológiai Műveletek") { BackColor = Color_Slate, ForeColor = Color_Cyan };
+            catMorph.DropDown.BackColor = Color_Slate; catMorph.DropDown.ForeColor = Color_Text;
+
+            var mFusionOld = new ToolStripMenuItem("Otsu Super Fusion (Hegesztés célszűrő)") { ForeColor = Color_Text }; mFusionOld.Click += (s, e) => InsertModuleAtSelected(new OtsuSuperFusionModule());
+            var mMorphAdv = new ToolStripMenuItem("Alakzat-módosítás (Open/Close/Erode)") { ForeColor = Color_Text }; mMorphAdv.Click += (s, e) => InsertModuleAtSelected(new AdvancedMorphologyModule());
+
+            catMorph.DropDownItems.AddRange(new ToolStripItem[] { mFusionOld, mMorphAdv });
+
+            // --- KATEGÓRIA 5: FREKVENCIA ÉS DETEKTÁLÁS ---
+            var catFreq = new ToolStripMenuItem("5. Frekvenciatartomány (FFT)") { BackColor = Color_Slate, ForeColor = Color_Cyan };
+            catFreq.DropDown.BackColor = Color_Slate; catFreq.DropDown.ForeColor = Color_Text;
+
+   //         var mFourier = new ToolStripMenuItem("Fourier interferencia csíkszűrő") { ForeColor = Color_Text }; mFourier.Click += (s, e) => InsertModuleAtSelected(new FourierFilterModule());
+            var mMatch = new ToolStripMenuItem("Template Matching (Multi-Sablon)") { ForeColor = Color_Text }; mMatch.Click += (s, e) => InsertModuleAtSelected(new TemplateMatchModule());
+
+            catFreq.DropDownItems.AddRange(new ToolStripItem[] {  mMatch });
+
+            // Fő akciósáv összeállítása
+            menuAddModule.Items.AddRange(new ToolStripItem[] { catSpatial, catBlur, catEdges, catMorph, catFreq });
+        }
+        // --- JAVÍTÁS 3: BESZÚRÁS PONTOSAN A KIJELÖLT ELEM ALÁ ---
+        private void InsertModuleAtSelected(IInspectionModule newModule)
+        {
+            int currentIdx = listBoxPipeline.SelectedIndex;
+
+            // Ha van kijelölt elem, beszúrjuk ALÁ, különben a lista legvégére fűzzük
+            if (currentIdx >= 0 && currentIdx < PipelineSteps.Count)
+            {
+                PipelineSteps.Insert(currentIdx + 1, newModule);
+                RefreshUI();
+                listBoxPipeline.SelectedIndex = currentIdx + 1; // Azonnal az új lépésre ugrunk
+            }
+            else
+            {
+                PipelineSteps.Add(newModule);
+                RefreshUI();
+                listBoxPipeline.SelectedIndex = PipelineSteps.Count - 1;
+            }
+        }
+        // --- JAVÍTÁS 4: ELEM ELTÁVOLÍTÁSA VÉDELMI FÉKKEL ---
+        private void BtnDelete_Click(object sender, EventArgs e)
+        {
+            int currentIdx = listBoxPipeline.SelectedIndex;
+            // Biztonsági fék 1: Ne lehessen törölni, ha semmi sincs kijelölve
+            if (currentIdx < 0 || currentIdx >= PipelineSteps.Count) return;
+            // Biztonsági fék 2: Az első Image Capture lépést iparilag TILTOTT törölni, mert az a lánc forrása!
+            if (currentIdx == 0)
+            {
+                MessageBox.Show("A kiinduló 'Source Image Capture' lépés nem távolítható el, mert ez adja a képet a teljes Pipeline számára!",
+"Művelet Letiltva", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            // Törlés végrehajtása
+            PipelineSteps.RemoveAt(currentIdx);
+            RefreshUI();
+            // A kijelölést az előző elemre pozicionáljuk vissza
+            listBoxPipeline.SelectedIndex = Math.Max(0, currentIdx - 1);
+        }
+        // --- JAVÍTÁS 1: ALAPÉRTELMEZETT TISZTA INDÍTÁS (CSAK CAPTURE) ---
+        private void CreateDefaultPipeline()
+        {
+            PipelineSteps.Clear();
+            PipelineSteps.Add(new ImageLoadModule()); // Kizárólag a kiinduló képbeolvasó marad
+        }
+   
+        /*
+        private void ListBoxPipeline_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            int idx = listBoxPipeline.SelectedIndex;
+            if (idx < 0) return;
+            IInspectionModule selectedModule = PipelineSteps[idx];
+            splitRight.Panel2.Controls.Clear();
+            propertyGridCommon.SelectedObject = selectedModule;
+            panelSpecificContainer.Controls.Clear();
+            if (selectedModule is TemplateMatchModule tmm)
+            {
+                TemplateMatchConfigControl matchUi = new TemplateMatchConfigControl(tmm, () => RunPipelineDebug(), this);
+                panelSpecificContainer.Controls.Add(matchUi);
+            }
+            else
+            {
+                Panel pSpecHeader = new Panel { Dock = DockStyle.Top, Height = 25, BackColor = Color_Light };
+                pSpecHeader.Controls.Add(new Label { Text = "🔧 MODULE SPECIFIC PARAMETERS", ForeColor = Color_Text, Font = new Font("Segoe UI", 7.5f, FontStyle.Bold), Location = new Point(10, 5), AutoSize = true });
+                PropertyGrid pgSpec = new PropertyGrid { Dock = DockStyle.Fill, BackColor = Color_Bg, ViewBackColor = Color_Bg, ViewForeColor = Color_Text, LineColor = Color_Light, ToolbarVisible = false, HelpVisible = false, PropertySort = PropertySort.Categorized };
+                pgSpec.PropertyValueChanged += (s, args) => RunPipelineDebug();
+                pgSpec.SelectedObject = selectedModule;
+                panelSpecificContainer.Controls.Add(pgSpec);
+                panelSpecificContainer.Controls.Add(pSpecHeader);
+            }
+            RunPipelineDebug();
+        }
+
+        */
+        public void StartTemplateSelection()
+        {
+            if (imageBoxExMain.Image == null) return;
+            _isSelectingTemplate = true; _isSelectingRoi = false;
+            imageBoxExMain.SelectionMode = ImageBoxSelectionMode.Rectangle;
+            imageBoxExMain.Cursor = Cursors.Cross;
+        }
+        public void StartRoiSelection()
+        {
+            if (imageBoxExMain.Image == null) return;
+            _isSelectingRoi = true; _isSelectingTemplate = false;
+            imageBoxExMain.SelectionMode = ImageBoxSelectionMode.Rectangle;
+            imageBoxExMain.Cursor = Cursors.SizeNWSE;
+        }
+        private void ImageBoxExMain_SelectionChanged(object sender, EventArgs e)
+        {
+            if (imageBoxExMain.SelectionRegion == RectangleF.Empty) return;
+            int idx = listBoxPipeline.SelectedIndex;
+            if (idx >= 0 && PipelineSteps[idx] is TemplateMatchModule tmm)
+            {
+                RectangleF selF = imageBoxExMain.SelectionRegion;
+                Rectangle sourceRect = new Rectangle((int)selF.X, (int)selF.Y, (int)selF.Width, (int)selF.Height);
+                if (sourceRect.Width > 5 && sourceRect.Height > 5)
+                {
+                    if (_isSelectingTemplate)
+                    {
+                        using (Bitmap fullBmp = new Bitmap(imageBoxExMain.Image))
+                        {
+                            Bitmap croppedTemplate = CropImage(fullBmp, sourceRect);
+                            foreach (Control ctrl in panelSpecificContainer.Controls)
+                            {
+                                if (ctrl is TemplateMatchConfigControl matchUi) { matchUi.AddNewTemplateFromBmp(croppedTemplate); break; }
+                            }
+                        }
+                    }
+                    else if (_isSelectingRoi)
+                    {
+                        tmm.ROI = sourceRect;
+                        MessageBox.Show($"Keresési ROI rögzítve!\nX: {tmm.ROI.X}, Y: {tmm.ROI.Y}, W: {tmm.ROI.Width}, H: {tmm.ROI.Height}", "ROI Beállítva");
+                    }
+                }
+            }
+            _isSelectingTemplate = false; _isSelectingRoi = false;
+            imageBoxExMain.SelectionRegion = RectangleF.Empty;
+            imageBoxExMain.SelectionMode = ImageBoxSelectionMode.None;
+            imageBoxExMain.Cursor = Cursors.Default;
+            RefreshUI();
+        }
+        private void RunPipelineDebug()
+        {
+            int idx = listBoxPipeline.SelectedIndex;
+            if (idx < 0) return;
+            using (InspectionContext context = new InspectionContext())
+            {
+                for (int i = 0; i <= idx; i++)
+                {
+                    IInspectionModule step = PipelineSteps[i];
+                    step.Process(context);
+                    if (context.SourceImage != null) context.ColorHistory[step.Name] = context.SourceImage.Clone();
+                    if (context.WorkingMask != null) context.GrayHistory[step.Name] = context.WorkingMask.Clone();
+                }
+                if (imageBoxExMain.Image != null) imageBoxExMain.Image = null;
+                IInspectionModule currentModule = PipelineSteps[idx];
+                if ((idx == 0 || currentModule is TemplateMatchModule) && context.SourceImage != null)
+                    imageBoxExMain.Image = context.SourceImage.ToBitmap();
+                else if (context.WorkingMask != null)
+                    imageBoxExMain.Image = context.WorkingMask.ToBitmap();
+            }
+        }
+        // --- JAVÍTÁS: AUTOMATA IPARI SORSZÁMOZÁS A LISTA FRISSÍTÉSEKOR ---
+        public void RefreshUI()
+        {
+            int savedIndex = listBoxPipeline.SelectedIndex;
+            listBoxPipeline.Items.Clear();
+
+            // Végigmegyünk a láncon, és dinamikusan beírjuk a valós sorszámokat (i + 1)
+            for (int i = 0; i < PipelineSteps.Count; i++)
+            {
+                if (PipelineSteps[i] is BaseInspectionModule baseMod)
+                {
+                    baseMod.StepIndex = i + 1; // Automatikusan kiosztja: 01, 02, 03...
+                }
+
+                // Felrakjuk a dinamikusan felsorszámozott nevet a bal oldali listába
+                listBoxPipeline.Items.Add(PipelineSteps[i].Name);
+            }
+
+            if (savedIndex >= 0 && savedIndex < listBoxPipeline.Items.Count) listBoxPipeline.SelectedIndex = savedIndex;
+            else if (listBoxPipeline.Items.Count > 0) listBoxPipeline.SelectedIndex = 0;
+        }
+
+        // --- JAVÍTÁS: GOLYÓÁLLÓ JOBB OLDALI PANEL MEGJELENÍTÉS ---
         private void ListBoxPipeline_SelectedIndexChanged(object sender, EventArgs e)
         {
             int idx = listBoxPipeline.SelectedIndex;
             if (idx < 0) return;
 
             IInspectionModule selectedModule = PipelineSteps[idx];
-            splitRight.Panel2.Controls.Clear(); // Tiszta lappal indulunk a jobb oldalon
 
-            if (selectedModule is TemplateMatchModule tmm)
+            // Fixen ráültetjük a felső Common rácsra az objektumot
+            propertyGridCommon.SelectedObject = selectedModule;
+
+            // Teljesen letakarítjuk és újra kényszerítjük az alsó specifikus konténert
+            panelSpecificContainer.Controls.Clear();
+            panelSpecificContainer.SuspendLayout(); // Leállítjuk a villódzást a felépítés alatt
+
+            // Típus-azonosítás a megújult öröklési hierarchiához igazítva
+            if (selectedModule.GetType() == typeof(TemplateMatchModule) || selectedModule is TemplateMatchModule)
             {
-                // Sablonkereső esetén betöltjük a te saját dizájnos vezérlőpultodat
+                TemplateMatchModule tmm = (TemplateMatchModule)selectedModule;
+
+                // Létrehozzuk a te nagy, gombos, táblázatos Multi-Sablon pultodat
                 TemplateMatchConfigControl matchUi = new TemplateMatchConfigControl(tmm, () => RunPipelineDebug(), this);
-                splitRight.Panel2.Controls.Add(matchUi);
+                matchUi.Dock = DockStyle.Fill; // Kényszerítjük, hogy teljesen töltse ki az alsó részt!
+
+                panelSpecificContainer.Controls.Add(matchUi);
             }
             else
             {
-                // Sima szűrőknél visszaadjuk a standard PropertyGrid rácsot
-                Panel pParamHeader = new Panel { Dock = DockStyle.Top, Height = 30, BackColor = Color_Light };
-                pParamHeader.Controls.Add(new Label { Text = "PROPERTIES", ForeColor = Color_Text, Font = new Font("Segoe UI", 8, FontStyle.Bold), Location = new Point(10, 8) });
+                // Minden egyéb szűrőhöz (Blur, Otsu) kitesszük a specifikus paraméter-rácsot
+                Panel pSpecHeader = new Panel { Dock = DockStyle.Top, Height = 25, BackColor = Color_Light };
+                pSpecHeader.Controls.Add(new Label { Text = "🔧 MODULE SPECIFIC PARAMETERS", ForeColor = Color_Text, Font = new Font("Segoe UI", 7.5f, FontStyle.Bold), Location = new Point(10, 5), AutoSize = true });
 
-                propertyGridModuleParams = new PropertyGrid { Dock = DockStyle.Fill, BackColor = Color_Bg, ViewBackColor = Color_Bg, ViewForeColor = Color_Text, LineColor = Color_Light, HelpBackColor = Color_Slate, HelpForeColor = Color_Text, ToolbarVisible = false, PropertySort = PropertySort.Categorized };
-                propertyGridModuleParams.PropertyValueChanged += (s, args) => RunPipelineDebug();
-                propertyGridModuleParams.SelectedObject = selectedModule;
+                PropertyGrid pgSpec = new PropertyGrid { Dock = DockStyle.Fill, BackColor = Color_Bg, ViewBackColor = Color_Bg, ViewForeColor = Color_Text, LineColor = Color_Light, ToolbarVisible = false, HelpVisible = false, PropertySort = PropertySort.Categorized };
+                pgSpec.PropertyValueChanged += (s, args) => RunPipelineDebug();
+                pgSpec.SelectedObject = selectedModule;
 
-                splitRight.Panel2.Controls.Add(propertyGridModuleParams);
-                splitRight.Panel2.Controls.Add(pParamHeader);
+                panelSpecificContainer.Controls.Add(pgSpec);
+                panelSpecificContainer.Controls.Add(pSpecHeader);
             }
+
+            panelSpecificContainer.ResumeLayout(true);
+            panelSpecificContainer.Refresh(); // Kényszerítjük a Windows Forms-ot az azonnali kirajzolásra!
 
             RunPipelineDebug();
         }
 
-
-        // Osztály szintű jelző a sablon-tanításhoz
-        private bool _isSelectingTemplate = false;
-
-        // Publikus indító metódus, amit a jobb oldali gomb meg fog hívni
-        public void StartTemplateSelection()
+        private void ListBoxPipeline_DrawItem(object sender, DrawItemEventArgs e)
         {
-            if (imageBoxExMain.Image == null) return;
-
-            _isSelectingTemplate = true;
-            // Átváltjuk a Cyotek ImageBox belső módját KIJELÖLÉSRE (Selection)
-            // Megjegyzés: Ha a te ImageBoxEx-edben ez a tulajdonság másképp van elnevezve, igazítsd hozzá (pl. SelectionMode = true)
-            imageBoxExMain.SelectionMode =  Cyotek.Windows.Forms.ImageBoxSelectionMode.Rectangle;
-            imageBoxExMain.Cursor = Cursors.Cross;
-
-            int idx = listBoxPipeline.SelectedIndex;
-            if (idx >= 0) listBoxPipeline.Items[idx] = "🎯 DRAG MOUSE ON IMAGE...";
-        }
-
-        // --- CYOTEK EGÉR-KIJELÖLÉS VÉGE (Ezt kötjük be az InitializeComponent-ben) ---
-        private void ImageBoxExMain_SelectionChanged(object sender, EventArgs e)
-        {
-            // Csak akkor vágunk, ha aktívan a bejelentett sablon-tanítás fázisban vagyunk és van érvényes kijelölés
-            if (!_isSelectingTemplate || imageBoxExMain.SelectionRegion == RectangleF.Empty) return;
-
-            try
+            if (e.Index < 0) return;
+            bool isSelected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
+            using (SolidBrush bg = new SolidBrush(isSelected ? Color_Cyan : Color_Bg))
+            using (SolidBrush fg = new SolidBrush(isSelected ? Color.Black : Color_Text))
             {
-                // Lekérjük a Cyotek által pixelpontosan kiszámolt kép-koordinátás téglalapot
-                RectangleF selF = imageBoxExMain.SelectionRegion;
-                Rectangle sourceRect = new Rectangle((int)selF.X, (int)selF.Y, (int)selF.Width, (int)selF.Height);
-
-                // Biztonsági minimum méret (ne vágjunk 2x2 pixeles parányi zajt)
-                if (sourceRect.Width > 5 && sourceRect.Height > 5)
-                {
-                    // Kivágjuk a darabot a te Utils.CropImage logikáddal a nyers főképből!
-                    int idx = listBoxPipeline.SelectedIndex;
-                    if (idx >= 0 && PipelineSteps[idx] is TemplateMatchModule tmm)
-                    {
-                        using (Bitmap fullBmp = new Bitmap(imageBoxExMain.Image))
-                        {
-                            Bitmap croppedTemplate = CropImage(fullBmp, sourceRect);
-
-                            // Megkeressük a jobb oldalon aktívan nyitva lévő konfigurációs panelt
-                            foreach (Control ctrl in splitRight.Panel2.Controls)
-                            {
-                                if (ctrl is TemplateMatchConfigControl matchUi)
-                                {
-                                    // Közvetlenül átadjuk a kivágott Bitmap-et a jobb oldali Multi-Template lapozónak!
-                                    matchUi.AddNewTemplateFromBmp(croppedTemplate);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("Template mouse selection crop error: " + ex.Message);
-            }
-            finally
-            {
-                // Visszaállítjuk a normál görgetős/zoomolós kameramódot
-                _isSelectingTemplate = false;
-                imageBoxExMain.SelectionRegion = RectangleF.Empty; // Kijelölő négyszög eltüntetése
-                imageBoxExMain.SelectionMode =  Cyotek.Windows.Forms.ImageBoxSelectionMode.None; // Vissza normál módba
-                imageBoxExMain.Cursor = Cursors.Default;
-                RefreshUI(); // Visszaírja a modul nevét a bal listában
+                e.Graphics.FillRectangle(bg, e.Bounds);
+                e.Graphics.DrawString(listBoxPipeline.Items[e.Index].ToString(), e.Font, fg, e.Bounds.X + 10, e.Bounds.Y + 4);
             }
         }
 
-
+        private void OnSaveClick(object sender, EventArgs e)
+        {
+            using (SaveFileDialog sfd = new SaveFileDialog { Filter = "Vision Recipe (.vrec)|.vrec", InitialDirectory = @"C:\Test" })
+            {
+                if (sfd.ShowDialog() == DialogResult.OK) VisionRecipe.SaveToFile(sfd.FileName, PipelineSteps);
+            }
+        }
 
         static public Bitmap CropImage(Bitmap source, Rectangle section)
         {
@@ -259,83 +466,10 @@ namespace FlexVision
         }
 
 
-        private void RunPipelineDebug()
-        {
-            int idx = listBoxPipeline.SelectedIndex;
-            if (idx < 0) return;
 
-            using (InspectionContext context = new InspectionContext())
-            {
-                for (int i = 0; i <= idx; i++)
-                {
-                    IInspectionModule step = PipelineSteps[i];
 
-                    // 1. Lefuttatjuk az adott lépést
-                    step.Process(context);
 
-                    // 2. ÚJ: Elmentjük a keletkező kép pillanatnyi állapotát a történeti tárba a lépés nevével!
-                    if (context.SourceImage != null)
-                        context.ColorHistory[step.Name] = context.SourceImage.Clone();
-                    if (context.WorkingMask != null)
-                        context.GrayHistory[step.Name] = context.WorkingMask.Clone();
-                }
-
-                // Kijelzés frissítése a tegnapi okos debugger szerint...
-                IInspectionModule currentModule = PipelineSteps[idx];
-                if (currentModule is TemplateMatchModule && context.SourceImage != null)
-                    imageBoxExMain.Image = context.SourceImage.ToBitmap();
-                else if (context.WorkingMask != null)
-                    imageBoxExMain.Image = context.WorkingMask.ToBitmap();
-            }
-        }
-
-        private void CreateDefaultPipeline()
-        {
-            PipelineSteps.Clear();
-            PipelineSteps.Add(new ImageLoadModule());
-            PipelineSteps.Add(new OtsuSuperFusionModule());
-        }
-
-        public void RefreshUI()
-        {
-            // 1. Elmentjük, hogy a frissítés pillanatában hányadik elem volt kijelölve
-            int savedIndex = listBoxPipeline.SelectedIndex;
-
-            // 2. Újratöltjük a listát a modulnevekkel
-            listBoxPipeline.Items.Clear();
-            foreach (var step in PipelineSteps) listBoxPipeline.Items.Add(step.Name);
-
-            // 3. JAVÍTÁS: Ha volt érvényes korábbi kijelölés, hajszálpontosan ODA UGRUNK VISSZA!
-            if (savedIndex >= 0 && savedIndex < listBoxPipeline.Items.Count)
-            {
-                listBoxPipeline.SelectedIndex = savedIndex;
-            }
-            else if (listBoxPipeline.Items.Count > 0)
-            {
-                listBoxPipeline.SelectedIndex = 0; // Alapértelmezett fallback, ha nem volt kijelölés
-            }
-        }
-
-        private void ListBoxPipeline_DrawItem(object sender, DrawItemEventArgs e)
-        {
-            if (e.Index < 0) return;
-            bool isSelected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
-            using (SolidBrush bg = new SolidBrush(isSelected ? Color_Cyan : Color_Bg))
-            using (SolidBrush fg = new SolidBrush(isSelected ? Color.Black : Color_Text))
-            {
-                e.Graphics.FillRectangle(bg, e.Bounds);
-                e.Graphics.DrawString(listBoxPipeline.Items[e.Index].ToString(), e.Font, fg, e.Bounds.X + 10, e.Bounds.Y + 4);
-            }
-        }
-        private void OnSaveClick(object sender, EventArgs e)
-        {
-            using (SaveFileDialog sfd = new SaveFileDialog { Filter = "Vision Recipe (.vrec)|.vrec", InitialDirectory = @"C:\Test" })
-            {
-                if (sfd.ShowDialog() == DialogResult.OK)
-                {
-                    VisionRecipe.SaveToFile(sfd.FileName, PipelineSteps);
-                }
-            }
-        }
     }
 }
+
+

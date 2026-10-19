@@ -10,7 +10,7 @@ using RotationTemplateMatch;
 namespace FlexVision
 {
     // ====================================================================
-    // --- INTELIGENS LEGÖRDÜLŐ MENÜ KONVERTER A FORRÁSVÁLASZTÁSHOZ ---
+    // --- INTELLIGENS LEGÖRDÜLŐ MENÜ KONVERTER A FORRÁSVÁLASZTÁSHOZ ---
     // ====================================================================
     public class InputStepNameConverter : StringConverter
     {
@@ -34,11 +34,16 @@ namespace FlexVision
     // ====================================================================
     [Serializable]
     [XmlInclude(typeof(MatchParameters))] // Kötelező az XML recept-mentőnek
-    public class TemplateMatchModule : IInspectionModule
+    public class TemplateMatchModule : BaseInspectionModule
     {
         // Az interfész által megkövetelt fix tulajdonságok
-        public string Name => "03. Template Matching (Multi-Sablon)";
-        public VisionModuleType ModuleType => VisionModuleType.BlobDetect;
+        // ÍGY MÓDOSÍTSD a TemplateMatchModule.cs-ben:
+        [System.ComponentModel.Browsable(false)]
+        public override string PureName => "Template Matching (Multi-Sablon)";
+
+
+    //    public string Name => "03. Template Matching (Multi-Sablon)";
+        public override VisionModuleType ModuleType => VisionModuleType.BlobDetect;
 
         // --- 1. BEMENETI BEÁLLÍTÁSOK (RECEPTBEN MENTHETŐ ÉS PARAMÉTEREZHETŐ) ---
         [Category("1. Keresési Beállítások")]
@@ -49,11 +54,36 @@ namespace FlexVision
         [Description("A keresési tartomány (Region of Interest) a főkép koordináta-rendszerében.")]
         public Rectangle ROI { get; set; } = new Rectangle(50, 50, 300, 200);
 
-        // ÚJ GRÁF-ALAPÚ FORRÁSVÁLASZTÓ KAPCSOLÓ: A jobb oldali Properties rácson legördülő menüként jelenik meg
+        // GRÁF-ALAPÚ FORRÁSVÁLASZTÓ KAPCSOLÓ: A jobb oldali Properties rácson és az egyedi panelen legördülő menüként jelenik meg
         [Category("1. Keresési Beállítások")]
         [TypeConverter(typeof(InputStepNameConverter))]
         [Description("Válaszd ki, hogy a sablonkereső melyik korábbi Pipeline lépés képén fusson le.")]
         public string InputStepLink { get; set; } = "Default (Előző lépés)";
+
+        // DINAMIKUS ÉS SZERKESZTHETŐ EGYEDI NÉVKEZELÉS (FEATURE ID COUPLING)
+        private string _customFeatureName = "";
+
+        [Category("1. Keresési Beállítások")]
+        [Description("A modul által kinyert mérési eredmény egyedi azonosítója a központi adattárban. Ha üresen hagyod, a rendszer automatikusan generálja a lépés nevéből.")]
+        public string CustomFeatureName
+        {
+            get { return _customFeatureName; }
+            set { _customFeatureName = value; }
+        }
+
+        // Intelligens belső tulajdonság, ami eldönti a végleges kulcsnevet az InspectionContext.Features mentéskor
+        [System.Xml.Serialization.XmlIgnore, Browsable(false)]
+        public string EffectiveFeatureName
+        {
+            get
+            {
+                // Ha a mérnök beírt egy egyedi nevet a rácson (pl. "Felső_Hegesztő_Pad"), szigorúan azt használjuk
+                if (!string.IsNullOrEmpty(_customFeatureName)) return _customFeatureName.Trim().Replace(" ", "_");
+
+                // Különben automatikusan legeneráljuk a modul neve alapján, szóközök és írásjelek nélkül
+                return this.Name.Replace(" ", "_").Replace(".", "").Replace("TL", "").Replace("(", "").Replace(")", "").Replace("-", "_");
+            }
+        }
 
         // A te bevált ipari paraméter-struktúrád
         [Category("2. Keresési Algoritmus Konfiguráció")]
@@ -108,7 +138,7 @@ namespace FlexVision
             }
         }
 
-        public void Process(InspectionContext context)
+        public override void Process(InspectionContext context)
         {
             // 1. DINAMIKUS FORRÁSVÁLASZTÁS: Lekérjük a beállított korábbi lépés képét!
             Image<Bgr, byte> targetInputColor = context.GetInputColorImage(this.InputStepLink);
@@ -126,7 +156,6 @@ namespace FlexVision
             {
                 // 2. Példányosítjuk a te jól bevált forgatási-számító motorodat
                 RotationInvariantTemplateMatch MatchEngine = new RotationInvariantTemplateMatch();
-                this.MatchParams.MaxPos = 6;
                 MatchEngine.SetOptions(this.MatchParams, this.UseRotation);
 
                 // Átváltunk tiszta Bitmap térbe a te gyári logikádhoz
@@ -136,7 +165,7 @@ namespace FlexVision
                     List<TargetMatch> finalResults = null;
                     int successfulIdx = -1;
 
-                    // 3. MULTI-TEMPLATE CASCADE FONTOSSÁGI SORRENDBEN
+                    // 3. MULTI-TEMPLATE CASCADE FONTOSSÁGI SORRENDBEN (FOREACH / FOR LOOP CASCADE)
                     for (int i = 0; i < Templates.Count; i++)
                     {
                         // A keresést a választott képen futtatjuk le!
@@ -150,12 +179,12 @@ namespace FlexVision
                             break; // Megvan az első sikeresen illeszkedő sablon, leállítjuk a cascade-ot!
                         }
 
-                        // Biztonsági mentés: ha egyetlen tökéletes sincs, az első sablon adatait mutatjuk
+                        // Biztonsági fék: ha egyetlen tökéletes sincs, az első sablon adatait mentjük el részeredménynek
                         if (i == 0) finalResults = currentResults;
                     }
                     watch.Stop();
 
-                    // 4. BELSŐ ADATOK ÉS ÉLŐ KIJELZŐK FRISSÍTÉSE A PROPERTYGRID REAPORTÁLÁSHOZ
+                    // 4. BELSŐ ADATOK ÉS ÉLŐ KIJELZŐK FRISSÍTÉSE A PROPERTYGRID / CONFIG CONTROL RIAPORTÁLÁSHOZ
                     this.LastExecutionTime = watch.ElapsedMilliseconds + " ms";
                     this.ExecutionTime = this.LastExecutionTime;
 
@@ -167,17 +196,30 @@ namespace FlexVision
                     this.LastTestResult = isPass ? "✅ PASS" : "❌ FAIL";
                     this.TestResult = this.LastTestResult;
 
-                    // 5. NYILAK ÉS KERETEK RÁRAJZOLÁSA A MÓDOSÍTOTT KÉPRE
+                    // ====================================================================
+                    // --- 5. LÉPÉS: POZÍCIÓMENTÉS A FEATURE STORE-BA ÉS NYILAZÁS ---
+                    // ====================================================================
+                    // JAVÍTÁS: Ellenőrizzük, hogy a kapott finalResults listában van-e érvényes találat elem
                     if (finalResults != null && finalResults.Count > 0)
                     {
-                        // Megkérjük a motorodat, rajzolja fel az eredmény-nyilakat
+                        // Szigorúan a te TargetMatch osztályod legelső [0] elemét olvassuk ki (ez a legjobb találat)
+                        TargetMatch bestMatch = finalResults[0];
+
+                        // Tűpontosan kinyerjük a te TargetMatch-ed belső mezőit (CenterPoint)
+                        PointF detektáltKözéppont = bestMatch.CenterPoint;
+
+                        // 1. FÁZIS: Elmentjük az élő koordinátát az univerzális névvel a központi adattárba
+                        string finalKey = this.EffectiveFeatureName;
+                        context.Features[finalKey] = new PointFeature(finalKey, this.Name, detektáltKözéppont);
+
+                        // Megkérjük a motorodat, hogy rajzolja rá az eredmény-nyilakat a színes alapképre
                         Bitmap resultBmp = MatchEngine.DrawResults(sourceBmp, new Point(0, 0));
 
-                        // Felülírjuk a lánc aktuális főképét a felnyilazott változattal, 
-                        // így a rákövetkező modulok vagy a kijelző már ezt látják!
+                        // Felülírjuk a lánc aktuális főképét a felnyilazott változattal, hogy a kijelző ezt mutassa
                         context.SourceImage?.Dispose();
                         context.SourceImage = new Image<Bgr, byte>(resultBmp);
                     }
+
                 }
             }
             catch (Exception ex)

@@ -23,6 +23,10 @@ public class SystemConfiguration
     [Category("1. GIGÉ / USB3 KAMERA"), Description("A vizsgáló kamera egyedi IP címe.")]
     public string CameraIP { get; set; } = "192.168.1.120";
 
+    [Category("1. GIGÉ / USB3 KAMERA"), Description("Kalibrációs tényező: 1 pixel mérete valós milliméterben (mm/pixel).")]
+    public double PixelToMmRatio { get; set; } = 1; // Alapértelmezett mikroszkópos érték
+
+
     [Category("1. GIGÉ / USB3 KAMERA"), Description("Az expozíciós idő (shutter speed) mikroszekundumban.")]
     public int ExposureTimeUs { get; set; } = 4800;
 

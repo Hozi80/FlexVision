@@ -13,6 +13,20 @@ namespace FlexVision // Biztosítsd, hogy ez megegyezzen a többi fájl névter�
     [XmlInclude(typeof(OtsuSuperFusionModule))]
     [XmlInclude(typeof(TemplateMatchModule))] // ÚJ: Megtanítjuk az XML-nek a sablonkereső osztályt!
     [XmlInclude(typeof(MatchParameters))]   // ÚJ: Megtanítjuk az XML-nek a belső paraméter-osztályt!
+    [XmlInclude(typeof(GaussianBlurModule))] // ÚJ: Gauss szűrő mentési híd
+    [XmlInclude(typeof(CannyEdgeModule))]    // ÚJ: Canny élkereső mentési híd
+    [XmlInclude(typeof(ColorInRangeModule))] // ÚJ: Színszűrő mentési híd
+    [XmlInclude(typeof(HistogramEqualizationModule))]
+    [XmlInclude(typeof(GammaCorrectionModule))]
+    [XmlInclude(typeof(SimpleThresholdModule))]
+    [XmlInclude(typeof(BoxFilterModule))]
+    [XmlInclude(typeof(MedianFilterModule))]
+    [XmlInclude(typeof(BilateralFilterModule))]
+    [XmlInclude(typeof(SobelFilterModule))]
+    [XmlInclude(typeof(LaplacianFilterModule))]
+    [XmlInclude(typeof(UnsharpMaskingModule))]
+    [XmlInclude(typeof(AdvancedMorphologyModule))]
+  //  [XmlInclude(typeof(FourierFilterModule))]
 
     [Serializable]
     public class VisionRecipe

@@ -116,6 +116,7 @@
       <DependentUpon>Form1.cs</DependentUpon>
     </Compile>
     <Compile Include="InspectionEngine.cs" />
+    <Compile Include="InspectionFeatures.cs" />
     <Compile Include="Inspections\RotationIvariantTemplateMatch.cs" />
     <Compile Include="LoginForm.cs">
       <SubType>Form</SubType>
