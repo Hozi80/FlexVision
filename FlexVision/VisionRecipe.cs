@@ -4,18 +4,18 @@ using System.Collections.Generic;
 using System.IO;
 using System.Xml.Serialization;
 
-namespace FlexVision // Biztosítsd, hogy ez megegyezzen a többi fájl névterével!
+namespace FlexVision
 {
-    // --- KRITIKUS JAVÍTÁS C# 7.3 XML SOROSÍTÁSHOZ ---
-    // Az XmlInclude attribútumokkal kötelezően megtanítjuk az XML motornak, 
-    // hogy a Pipeline listában milyen egyedi modulosztályok fordulhatnak elő!
+    // --- GOLYÓÁLLÓ JAVÍTÁS XML SOROSÍTÁSHOZ ---
+    // Az összes újonnan bevezetett és egyedi modult kötelezően regisztráljuk az XML motorban!
     [XmlInclude(typeof(ImageLoadModule))]
     [XmlInclude(typeof(OtsuSuperFusionModule))]
-    [XmlInclude(typeof(TemplateMatchModule))] // ÚJ: Megtanítjuk az XML-nek a sablonkereső osztályt!
-    [XmlInclude(typeof(MatchParameters))]   // ÚJ: Megtanítjuk az XML-nek a belső paraméter-osztályt!
-    [XmlInclude(typeof(GaussianBlurModule))] // ÚJ: Gauss szűrő mentési híd
-    [XmlInclude(typeof(CannyEdgeModule))]    // ÚJ: Canny élkereső mentési híd
-    [XmlInclude(typeof(ColorInRangeModule))] // ÚJ: Színszűrő mentési híd
+    [XmlInclude(typeof(TemplateMatchModule))]
+    [XmlInclude(typeof(MatchParameters))]
+    [XmlInclude(typeof(GaussianBlurModule))]
+    [XmlInclude(typeof(CannyEdgeModule))]
+    [XmlInclude(typeof(ColorInRangeModule))]
+    [XmlInclude(typeof(ColorSpaceType))] // Regisztráljuk a színszűrő enumot is!
     [XmlInclude(typeof(HistogramEqualizationModule))]
     [XmlInclude(typeof(GammaCorrectionModule))]
     [XmlInclude(typeof(SimpleThresholdModule))]
@@ -26,7 +26,12 @@ namespace FlexVision // Biztosítsd, hogy ez megegyezzen a többi fájl névter�
     [XmlInclude(typeof(LaplacianFilterModule))]
     [XmlInclude(typeof(UnsharpMaskingModule))]
     [XmlInclude(typeof(AdvancedMorphologyModule))]
-  //  [XmlInclude(typeof(FourierFilterModule))]
+    [XmlInclude(typeof(SubRoiGeneratorModule))]
+    [XmlInclude(typeof(EdgeBasedMatchModule))]
+
+    // --- ÚJ RECEPTMENTÉSI REGISZTRÁCIÓK ---
+    [XmlInclude(typeof(SubPipelineEndModule))] // Regisztráljuk az automata Scope-lezáró modult!
+   // [XmlInclude(typeof(EdgeBasedMatchModule))]  // Regisztráljuk a te saját Sobel-alapú követőmodulodat!
 
     [Serializable]
     public class VisionRecipe

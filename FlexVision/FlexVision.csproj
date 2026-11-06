@@ -61,8 +61,24 @@
     <Reference Include="Emgu.CV.World, Version=4.1.1.3497, Culture=neutral, PublicKeyToken=7281126722ab4438, processorArchitecture=MSIL">
       <HintPath>..\packages\EMGU.CV.4.1.1.3497\lib\net35\Emgu.CV.World.dll</HintPath>
     </Reference>
+    <Reference Include="OpenCL.Net, Version=2.2.9.0, Culture=neutral, processorArchitecture=MSIL">
+      <HintPath>..\packages\OpenCL.Net.2.2.9.0\lib\net40\OpenCL.Net.dll</HintPath>
+    </Reference>
     <Reference Include="System" />
+    <Reference Include="System.Buffers, Version=4.0.5.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51, processorArchitecture=MSIL">
+      <HintPath>..\packages\System.Buffers.4.6.1\lib\net462\System.Buffers.dll</HintPath>
+    </Reference>
     <Reference Include="System.Core" />
+    <Reference Include="System.Memory, Version=4.0.5.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51, processorArchitecture=MSIL">
+      <HintPath>..\packages\System.Memory.4.6.3\lib\net462\System.Memory.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Numerics" />
+    <Reference Include="System.Numerics.Vectors, Version=4.1.6.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
+      <HintPath>..\packages\System.Numerics.Vectors.4.6.1\lib\net462\System.Numerics.Vectors.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Runtime.CompilerServices.Unsafe, Version=6.0.3.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
+      <HintPath>..\packages\System.Runtime.CompilerServices.Unsafe.6.1.2\lib\net462\System.Runtime.CompilerServices.Unsafe.dll</HintPath>
+    </Reference>
     <Reference Include="System.Xml.Linq" />
     <Reference Include="System.Data.DataSetExtensions" />
     <Reference Include="Microsoft.CSharp" />
@@ -77,6 +93,9 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="ColorFilterConfigControl.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
     <Compile Include="Controls\ImageBox\DragHandle.cs" />
     <Compile Include="Controls\ImageBox\DragHandleAnchor.cs" />
     <Compile Include="Controls\ImageBox\DragHandleCollection.cs" />
@@ -109,14 +128,37 @@
     </Compile>
     <Compile Include="Controls\ImageBox\ZoomLevelCollection.cs" />
     <Compile Include="Controls\ImageBox\ZoomLevelCollectionConverter.cs" />
+    <Compile Include="Controls\RangeSlider\Classes\Drawing.cs" />
+    <Compile Include="Controls\RangeSlider\Method\Drawing.cs" />
+    <Compile Include="Controls\RangeSlider\Method\Math.cs" />
+    <Compile Include="Controls\RangeSlider\Method\System.cs" />
+    <Compile Include="Controls\RangeSlider\RangeSlider.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Include="Controls\RangeSlider\RangeSliderWithAverage.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Include="Controls\RangeSlider\Slider.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Include="EdgeBasedMatchConfigControl.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Include="EdgeBasedMatchModule.cs" />
     <Compile Include="Form1.cs">
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="Form1.Designer.cs">
       <DependentUpon>Form1.cs</DependentUpon>
     </Compile>
+    <Compile Include="HardwareAccelerator.cs" />
+    <Compile Include="IColorPickable.cs" />
     <Compile Include="InspectionEngine.cs" />
     <Compile Include="InspectionFeatures.cs" />
+    <Compile Include="Inspections\ComputeContext.cs" />
+    <Compile Include="Inspections\EdgeBasedModelInfo.cs" />
+    <Compile Include="Inspections\EdgeBasedModelInfo360.cs" />
+    <Compile Include="Inspections\EdgeBasedTemplate.cs" />
     <Compile Include="Inspections\RotationIvariantTemplateMatch.cs" />
     <Compile Include="LoginForm.cs">
       <SubType>Form</SubType>
@@ -126,14 +168,20 @@
     </Compile>
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="SubPipelineEndModule.cs" />
+    <Compile Include="SubRoiGeneratorModule.cs" />
     <Compile Include="SystemConfiguration.cs" />
     <Compile Include="TemplateMatchConfigControl.cs">
       <SubType>UserControl</SubType>
     </Compile>
     <Compile Include="TemplateMatchModule.cs" />
+    <Compile Include="TemplateTrainerForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="UserManagement.cs" />
     <Compile Include="VisionRecipe.cs" />
     <EmbeddedResource Include="Controls\ImageBox\ImageBoxEx.resx" />
+    <EmbeddedResource Include="Controls\RangeSlider\Slider.resx" />
     <EmbeddedResource Include="Properties\Resources.resx">
       <Generator>ResXFileCodeGenerator</Generator>
       <LastGenOutput>Resources.Designer.cs</LastGenOutput>
@@ -168,5 +216,7 @@
       <ErrorText>This project references NuGet package(s) that are missing on this computer. Use NuGet Package Restore to download them.  For more information, see http://go.microsoft.com/fwlink/?LinkID=322105. The missing file is {0}.</ErrorText>
     </PropertyGroup>
     <Error Condition="!Exists('..\packages\EMGU.CV.4.1.1.3497\build\EMGU.CV.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\EMGU.CV.4.1.1.3497\build\EMGU.CV.targets'))" />
+    <Error Condition="!Exists('..\packages\OpenCL.Net.2.2.9.0\build\net40\OpenCL.Net.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\OpenCL.Net.2.2.9.0\build\net40\OpenCL.Net.targets'))" />
   </Target>
+  <Import Project="..\packages\OpenCL.Net.2.2.9.0\build\net40\OpenCL.Net.targets" Condition="Exists('..\packages\OpenCL.Net.2.2.9.0\build\net40\OpenCL.Net.targets')" />
 </Project>

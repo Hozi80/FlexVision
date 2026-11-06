@@ -1,0 +1,387 @@
+		public List<EdgeBasedShapeMatchingResult> FindMatchModel_GPU_Scaled(Image<Gray, float> Source)
+		{
+			var returnresult = new List<EdgeBasedShapeMatchingResult>();
+
+			// 1) Template adatok GPU-ra
+			CopyTemplateDataToGPU(Scaled);
+
+			// 2) Emgu CV előkészítés: minden CV_32F (float)
+			Mat SourceImage = Source.Resize(scale, Emgu.CV.CvEnum.Inter.Area).Mat;
+			Size Ssize = new Size(SourceImage.Cols, SourceImage.Rows);
+
+			Mat CSdx = new Mat(Ssize, Emgu.CV.CvEnum.DepthType.Cv32F, 1);           // X deriváltak
+			Mat CSdy = new Mat(Ssize, Emgu.CV.CvEnum.DepthType.Cv32F, 1);           // Y deriváltak
+			Mat angle_src = new Mat(Ssize, Emgu.CV.CvEnum.DepthType.Cv32F, 1);
+			Mat magnitude_src = new Mat(Ssize, Emgu.CV.CvEnum.DepthType.Cv32F, 1);
+			Mat magnitude = new Mat(Ssize, Emgu.CV.CvEnum.DepthType.Cv32F, 1);
+			Image<Gray, float> ForDivide = new Image<Gray, float>(Ssize.Width, Ssize.Height, new Gray(1.0));
+
+			// 3) Deriváltak és magnitúdó számítása CPU-n
+			CvInvoke.Sobel(SourceImage, CSdx, Emgu.CV.CvEnum.DepthType.Cv32F, 1, 0, 3);
+			CvInvoke.Sobel(SourceImage, CSdy, Emgu.CV.CvEnum.DepthType.Cv32F, 0, 1, 3);
+			CvInvoke.CartToPolar(CSdx, CSdy, magnitude_src, angle_src);
+
+			// Szinkronizáció: Az Image objektumok folytonos .Data tömbjeit használjuk fel buffereléshez padding bájtok ellen
+			X = CSdx.ToImage<Gray, float>();
+			Y = CSdy.ToImage<Gray, float>();
+			M = magnitude_src.ToImage<Gray, float>();
+
+			CvInvoke.Divide(ForDivide.Mat, magnitude_src, magnitude);
+
+			// =========================================================================
+			// 🔥 IPARI TUNING: GRADIENS TOLERANCIA BEVEZETÉSE (Él-elmosás)
+			// Egy finom 3x3-as GaussianBlur-rel az élek intenzitását picit szétterítjük.
+			// Így a rendszer toleráns lesz az 1-2 pixeles méretbeli pontatlanságokra.
+			// =========================================================================
+			Mat blurredMagnitude = new Mat();
+			CvInvoke.GaussianBlur(magnitude, blurredMagnitude, new Size(3, 3), 1.0, 1.0);
+
+			// A GPU-ra küldendő magImage-et a simított képből példányosítjuk
+			var magImage = blurredMagnitude.ToImage<Gray, float>();
+			// =========================================================================
+
+			// 4) Alap méretek
+			int W = Ssize.Width;
+			int H = Ssize.Height;
+			int PixelCount = W * H;
+			SourceWidth = W;
+
+			// 5) OpenCL bufferek (nem generikus IMem, de garantáltan folytonos .Data tömbökből táplálva!)
+			ErrorCode errNum;
+			IntPtr bufferSizeInBytes = (IntPtr)(sizeof(float) * PixelCount);
+
+			IMem CLSdx = Cl.CreateBuffer(context, MemFlags.ReadOnly | MemFlags.CopyHostPtr,
+				bufferSizeInBytes, X.Data, out errNum);
+			ComputeContext.throwErrorIfNotSuccessfull(errNum, "CLSdx");
+
+			IMem CLSdy = Cl.CreateBuffer(context, MemFlags.ReadOnly | MemFlags.CopyHostPtr,
+				bufferSizeInBytes, Y.Data, out errNum);
+			ComputeContext.throwErrorIfNotSuccessfull(errNum, "CLSdy");
+
+			// JAVÍTÁS: A nyers, merev kép helyett a toleranciával kiszélesített magImage.Data-t küldjük!
+			IMem CLmagnitude = Cl.CreateBuffer(context, MemFlags.ReadOnly | MemFlags.CopyHostPtr,
+				bufferSizeInBytes, magImage.Data, out errNum);
+			ComputeContext.throwErrorIfNotSuccessfull(errNum, "CLmagnitude");
+
+			// Végső (reduktált) output bufferek
+			IMem ResultMap = Cl.CreateBuffer(context, MemFlags.ReadWrite,
+				bufferSizeInBytes, out errNum);
+			ComputeContext.throwErrorIfNotSuccessfull(errNum, "ResultMap");
+
+			IMem RotationMap = Cl.CreateBuffer(context, MemFlags.ReadWrite,
+				(IntPtr)(sizeof(int) * PixelCount), out errNum);
+			ComputeContext.throwErrorIfNotSuccessfull(errNum, "RotationMap");
+
+			// A lokális ideiglenes mátrixot felszabadítjuk a bufferelés után
+			blurredMagnitude.Dispose();
+
+			// Host oldali tömbök az olvasáshoz
+			float[] result = new float[PixelCount];
+			int[] rmap = new int[PixelCount];
+
+			// 6) Accuracy módok és stride-ok
+			int rotm = 1;    // rotáció stride (Speed:3, Balanced:2, Accuracy:1)
+			int pixm = 1;    // pixel stride (Speed:2, Balanced/Accuracy:1)
+			OpenCL.Net.Kernel computeKernel;
+
+			switch (Accuracy)
+			{
+				case 1: // Speed
+					rotm = 3;
+					pixm = 2;
+					computeKernel = kernelSpeed;
+					break;
+				case 2: // Balanced
+					rotm = 2;
+					pixm = 1;
+					computeKernel = kernelBalanced;
+					break;
+				case 3: // Accuracy
+				default:
+					rotm = 1;
+					pixm = 1;
+					computeKernel = kernelAccuracy;
+					break;
+			}
+
+			int globalsize = PixelCount / pixm;
+
+			// --- JAVÍTOTT MULTI-SCALE ÉS NON-UNIFORM SZÖGTARTOMÁNY SZÁMÍTÁS ---
+			int singleRangeAngles = (AngleDetectionRangeSimmetric * 2) + 1;
+			int singleRangeCount = (int)Math.Ceiling((double)singleRangeAngles / rotm);
+
+			// A GPU-nak átadott teljes kombinációs méret: (X_méretek * Y_méretek) * Szűkített szögek száma
+			int totalScaleCombinations = ScaleVariationsX.Length * ScaleVariationsY.Length;
+			int rotationsCount = totalScaleCombinations * singleRangeCount;
+			int rotdiv = rotationsCount;
+
+			int[] customRotatePositions = new int[rotationsCount];
+			int writeIdx = 0;
+
+			// Háromszoros ciklus: végigmegyünk az összes X és Y skálakombináción, és azon belül a szögeken
+			int combinationIndex = 0;
+			foreach (float sX in ScaleVariationsX)
+			{
+				foreach (float sY in ScaleVariationsY)
+				{
+					// Kiszámítjuk az aktuális skálatömb eltolását (offsetét) a globális memóriában
+					int scaleBlockOffset = combinationIndex * 360;
+
+					for (int a = -AngleDetectionRangeSimmetric; a <= AngleDetectionRangeSimmetric; a += rotm)
+					{
+						if (writeIdx >= rotationsCount) break;
+
+						int validAngle = a;
+						if (validAngle < 0) validAngle += 360;
+						if (validAngle >= 360) validAngle -= 360;
+
+						// A TrainTemplate '360 - validAngle' logikájához igazított abszolút index
+						int arrayIndex = 360 - validAngle;
+						if (arrayIndex >= 360) arrayIndex -= 360;
+
+						// Kiszámítjuk a globális modell-indexet a kombinált 1D tömbben
+						int globalModelIdx = scaleBlockOffset + arrayIndex;
+
+						customRotatePositions[writeIdx] = Scaled.positions[globalModelIdx];
+						writeIdx++;
+					}
+					combinationIndex++;
+				}
+			}
+
+			// 7) 2D output buffer: Csak a korlátozott szögtartománynak foglalunk helyet!
+			IMem Result2D = Cl.CreateBuffer(context, MemFlags.ReadWrite,
+				(IntPtr)(sizeof(float) * PixelCount * rotationsCount), out errNum);
+			ComputeContext.throwErrorIfNotSuccessfull(errNum, "Result2D");
+
+			// 8) INIT kernel: 2D output feltöltése -INF-re (Becsomagolt unmanaged skalár tömbökkel!)
+			{
+				int[] wrapPixelCount = new int[] { PixelCount };
+				int[] wrapRotationsCount = new int[] { rotationsCount };
+
+				errNum = Cl.SetKernelArg(initKernel2D, 0, Result2D);
+				errNum |= Cl.SetKernelArg(initKernel2D, 1, (IntPtr)sizeof(int), wrapPixelCount);
+				errNum |= Cl.SetKernelArg(initKernel2D, 2, (IntPtr)sizeof(int), wrapRotationsCount);
+				ComputeContext.throwErrorIfNotSuccessfull(errNum, "init args hiba");
+
+				IntPtr[] gwsInit = new IntPtr[] { (IntPtr)PixelCount, (IntPtr)rotationsCount };
+				errNum = Cl.EnqueueNDRangeKernel(commandQueue, initKernel2D, 2, null, gwsInit, null, 0, null, out _);
+				ComputeContext.throwErrorIfNotSuccessfull(errNum, "enqueue init");
+			}
+
+			// Létrehozzuk a szűkített szögpozíciók egyedi unmanaged bufferét a fix CLTemppositions helyett
+			IMem CLCustomPositions = Cl.CreateBuffer(context, MemFlags.ReadOnly | MemFlags.CopyHostPtr,
+				(IntPtr)(sizeof(int) * rotationsCount), customRotatePositions, out errNum);
+			ComputeContext.throwErrorIfNotSuccessfull(errNum, "CLCustomPositions hiba");
+
+			// 9) Számoló kernel: 2D NDRange [globalsize, rotdiv] (Becsomagolt unmanaged skalár tömbökkel!)
+			{
+				int[] wrapW = new int[] { W };
+				int[] wrapPixelCount = new int[] { PixelCount };
+				float[] wrapMinScore = new float[] { minScore };
+				int[] wrapRotationsCount = new int[] { rotationsCount };
+
+				errNum = Cl.SetKernelArg(computeKernel, 0, CLmagnitude);
+				errNum |= Cl.SetKernelArg(computeKernel, 1, CLSdx);
+				errNum |= Cl.SetKernelArg(computeKernel, 2, CLSdy);
+
+				errNum |= Cl.SetKernelArg(computeKernel, 3, CLTempDerivativeX);
+				errNum |= Cl.SetKernelArg(computeKernel, 4, CLTempDerivativeY);
+				errNum |= Cl.SetKernelArg(computeKernel, 5, CLTempMagnitude);
+
+				errNum |= Cl.SetKernelArg(computeKernel, 6, CLTempCordX);
+				errNum |= Cl.SetKernelArg(computeKernel, 7, CLTempCordY);
+				errNum |= Cl.SetKernelArg(computeKernel, 8, CLTempNoCoord);
+
+				errNum |= Cl.SetKernelArg(computeKernel, 9, (IntPtr)sizeof(int), wrapW);
+				errNum |= Cl.SetKernelArg(computeKernel, 10, (IntPtr)sizeof(int), wrapPixelCount);
+				errNum |= Cl.SetKernelArg(computeKernel, 11, (IntPtr)sizeof(float), wrapMinScore);
+
+				// KRITIKUS SZINKRONIZÁCIÓ: A fix 360 fokos CLTemppositions helyett az új CLCustomPositions-t adjuk át!
+				errNum |= Cl.SetKernelArg(computeKernel, 12, CLCustomPositions);
+				errNum |= Cl.SetKernelArg(computeKernel, 13, CLnormMinScore);
+				errNum |= Cl.SetKernelArg(computeKernel, 14, CLnormGreediness);
+
+				errNum |= Cl.SetKernelArg(computeKernel, 15, (IntPtr)sizeof(int), wrapRotationsCount);
+				errNum |= Cl.SetKernelArg(computeKernel, 16, Result2D);
+
+				ComputeContext.throwErrorIfNotSuccessfull(errNum, "set compute args");
+
+				IntPtr[] gwsCompute = new IntPtr[] { (IntPtr)globalsize, (IntPtr)rotdiv };
+				errNum = Cl.EnqueueNDRangeKernel(commandQueue, computeKernel, 2, null, gwsCompute, null, 0, null, out var eventExecutedKernel);
+				ComputeContext.throwErrorIfNotSuccessfull(errNum, "enqueue compute");
+
+				Cl.Finish(commandQueue);
+			}
+
+			// 10) Redukció kernel: 1D NDRange [PixelCount] (Becsomagolt unmanaged skalár tömbökkel!)
+			{
+				int[] wrapPixelCount = new int[] { PixelCount };
+				int[] wrapRotationsCount = new int[] { rotationsCount };
+
+				errNum = Cl.SetKernelArg(reduceKernel, 0, Result2D);
+				errNum |= Cl.SetKernelArg(reduceKernel, 1, (IntPtr)sizeof(int), wrapPixelCount);
+				errNum |= Cl.SetKernelArg(reduceKernel, 2, (IntPtr)sizeof(int), wrapRotationsCount);
+				errNum |= Cl.SetKernelArg(reduceKernel, 3, ResultMap);
+				errNum |= Cl.SetKernelArg(reduceKernel, 4, RotationMap);
+
+				ComputeContext.throwErrorIfNotSuccessfull(errNum, "set reduce args");
+
+				IntPtr[] gwsReduce = new IntPtr[] { (IntPtr)PixelCount };
+				errNum = Cl.EnqueueNDRangeKernel(commandQueue, reduceKernel, 1, null, gwsReduce, null, 0, null, out _);
+				ComputeContext.throwErrorIfNotSuccessfull(errNum, "enqueue reduce");
+
+				Cl.Finish(commandQueue);
+			}
+
+			// 11) Kiolvasás a hostra
+			{
+				OpenCL.Net.Event ev;
+				errNum = Cl.EnqueueReadBuffer(commandQueue, ResultMap, OpenCL.Net.Bool.True, (IntPtr)0,
+					(IntPtr)(PixelCount * sizeof(float)), result, 0, null, out ev);
+				ComputeContext.throwErrorIfNotSuccessfull(errNum, "read ResultMap");
+
+				errNum = Cl.EnqueueReadBuffer(commandQueue, RotationMap, OpenCL.Net.Bool.True, (IntPtr)0,
+					(IntPtr)(PixelCount * sizeof(int)), rmap, 0, null, out ev);
+				ComputeContext.throwErrorIfNotSuccessfull(errNum, "read RotationMap");
+			}
+
+			// 12) Multi-Match + CPU Paraboloid Sub-Pixel kereső ciklus (JAVÍTOTT TÖMBKEZELÉSSEL)
+			int blankingRadius = (int)(Models[0].modelWidth / 2);
+
+			// Készítünk egy munkamásolatot a GPU-ból beolvasott eredményekből, 
+			// hogy a kitakarások ne rontsák el a globális tömb struktúráját
+			float[] workingResult = new float[result.Length];
+			Array.Copy(result, workingResult, result.Length);
+
+			for (int e = 0; e < ObjectCount; e++)
+			{
+				double maxVal = double.NegativeInfinity;
+				int bestIdx = -1;
+
+				// A munkamásolatban keressük meg a következő legmagasabb Score-t
+				for (int q = 0; q < workingResult.Length; q++)
+				{
+					if (workingResult[q] > maxVal)
+					{
+						maxVal = workingResult[q];
+						bestIdx = q;
+					}
+				}
+				// IPARI KÜSZÖBÖLÉS: Ha a találat score-ja kisebb, mint a minScore 75%-a,
+				// akkor az már csak háttérzaj, nem futunk tovább
+				if (bestIdx < 0 || maxVal < (minScore * 0.5f)) break;
+				int imgCol = bestIdx % W;
+				int imgRow = bestIdx / W;
+				float[,] neighbors = new float[3, 3];
+				PointF subPixelOffset = new PointF(0f, 0f);
+				// Szomszédok gyűjtése a paraboloidhoz (Az eredeti sértetlen result tömbből!)
+				if (imgCol > 0 && imgCol < W - 1 && imgRow > 0 && imgRow < H - 1)
+				{
+					neighbors[0, 0] = result[bestIdx - W - 1];
+					neighbors[0, 1] = result[bestIdx - W];
+					neighbors[0, 2] = result[bestIdx - W + 1];
+					neighbors[1, 0] = result[bestIdx - 1];
+					neighbors[1, 1] = (float)maxVal;
+					neighbors[1, 2] = result[bestIdx + 1];
+					neighbors[2, 0] = result[bestIdx + W - 1];
+					neighbors[2, 1] = result[bestIdx + W];
+					neighbors[2, 2] = result[bestIdx + W + 1];
+					subPixelOffset = ComputeSubPixelParaboloid(neighbors);
+				}
+				double exactRow = imgRow + subPixelOffset.Y;
+				double exactCol = imgCol + subPixelOffset.X;
+				double finalSubPixelRow = exactRow * (1.0 / scale);
+				double finalSubPixelCol = exactCol * (1.0 / scale);
+
+
+
+
+
+
+
+
+				// --- JAVÍTOTT, SZÁLBIZTOS NON-UNIFORM VISSZAFEJTÉS (NEM FOG TÚLINDEXELNI) ---
+				int innerAngleIdx = rmap[bestIdx]; // A GPU által visszaadott nyertes abszolút szál index (pl. 0..3248)
+
+				// 1. Megkeressük, hogy a blokkon belül hanyadik szög-alindex nyert (0 és singleRangeCount-1 között)
+				int innerAngleInBlock = innerAngleIdx % singleRangeCount;
+
+				// 2. Megkeressük, hogy melyik X-Y skálakombináció-blokk nyert
+				int matchedCombinationIdx = innerAngleIdx / singleRangeCount;
+
+				// Biztonsági korlát: Ha a GPU valamiért túlindexelt értéket adna vissza, lefejezzük a mátrix szélén
+				if (matchedCombinationIdx >= totalScaleCombinations)
+					matchedCombinationIdx = totalScaleCombinations - 1;
+
+				// Visszafejtjük az X és Y skálaindexeket a kétdimenziós mátrix-sorrend alapján
+				int matchedScaleXIdx = matchedCombinationIdx / ScaleVariationsY.Length;
+				int matchedScaleYIdx = matchedCombinationIdx % ScaleVariationsY.Length;
+
+				// Biztonsági tömbhatár-ellenőrzés (Garantálja, hogy SOHA többé ne dobjon IndexOutOfRange-et!)
+				if (matchedScaleXIdx >= ScaleVariationsX.Length) matchedScaleXIdx = ScaleVariationsX.Length - 1;
+				if (matchedScaleYIdx >= ScaleVariationsY.Length) matchedScaleYIdx = ScaleVariationsY.Length - 1;
+
+				float finalMatchedScaleX = ScaleVariationsX[matchedScaleXIdx];
+				float finalMatchedScaleY = ScaleVariationsY[matchedScaleYIdx];
+
+				// 3. Visszafejtjük a valós C# szöget a blokkon belüli tiszta szög-sorszámból
+				int calculatedAngle = -AngleDetectionRangeSimmetric + (innerAngleInBlock * rotm);
+				if (calculatedAngle < 0) calculatedAngle += 360;
+				if (calculatedAngle >= 360) calculatedAngle -= 360;
+
+				// Mivel a TrainTemplate (360 - a) szerint mentett, visszatükrözzük a jó irányba
+				int realAngle = 360 - calculatedAngle;
+				if (realAngle >= 360) realAngle -= 360;
+				if (realAngle < 0) realAngle += 360;
+
+				// Kiíratjuk a debug konzolra a megtalált pontos Non-Uniform torzulást!
+				Debug.WriteLine($"[AOI MATCH] Találat -> X: {finalMatchedScaleX * 100}%, Y: {finalMatchedScaleY * 100}%, Szög: {realAngle}° | Score: {maxVal:F3}");
+
+				var r = new EdgeBasedShapeMatchingResult
+				{
+					X = finalSubPixelRow,
+					Y = finalSubPixelCol,
+					position = bestIdx,
+					Angle = realAngle,
+					Score = (float)maxVal
+				};
+				returnresult.Add(r);
+				// ----------------=========================================================---
+
+
+
+
+
+
+
+				int startX = Math.Max(0, imgCol - blankingRadius);
+				int endX = Math.Min(W - 1, imgCol + blankingRadius);
+				int startY = Math.Max(0, imgRow - blankingRadius);
+				int endY = Math.Min(H - 1, imgRow + blankingRadius);
+				for (int row = startY; row <= endY; row++)
+				{
+					for (int col = startX; col <= endX; col++)
+					{
+						workingResult[row * W + col] = float.NegativeInfinity;
+					}
+				}
+			}
+			// 13) Takarítás
+			CLSdx.Dispose();
+			CLSdy.Dispose();
+			CLmagnitude.Dispose();
+			Result2D.Dispose();
+			ResultMap.Dispose();
+			RotationMap.Dispose();
+			Cl.ReleaseMemObject(CLCustomPositions); // Felszabadítjuk az egyedi szög-buffert
+			SourceImage.Dispose();
+			CSdx.Dispose();
+			CSdy.Dispose();
+			angle_src.Dispose();
+			magnitude_src.Dispose();
+			magnitude.Dispose();
+			ForDivide.Dispose();
+			ReleaseMEMObjects();
+			return returnresult;
+		}

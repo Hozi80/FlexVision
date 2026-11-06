@@ -24,7 +24,7 @@ namespace FlexVision
         private Button btnSelectTemplate, btnSelectRoi, btnTest;
 
         // Paraméter beviteli mezők
-        private NumericUpDown numScore, numAngle, numMaxPos;
+        private NumericUpDown numScore, numAngle, numExpectedCount;
         private CheckBox checkPolarity;
 
         // Eredményjelzők
@@ -89,6 +89,34 @@ namespace FlexVision
             btnTest = CreateControlBtn("▶ TEST MATCH", 10, 175, 320, 35, Color.LightGreen);
             btnTest.ForeColor = Color.Black;
 
+            Label lblExpected = new Label { Text = "Obj. Count:", ForeColor = Color_Text, Location = new Point(170, 280), AutoSize = true, Font = new Font("Segoe UI", 8, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft };
+
+            numExpectedCount = new NumericUpDown
+            {
+                Location = new Point(255, 280),
+                Width = 65,
+                Minimum = 1,
+                Maximum = 100,
+                Value = _module.ExpectedObjectCount, // Beolvassuk a modul pillanatnyi MaxPos értékét
+                BackColor = Color_Light,
+                ForeColor = Color_Cyan,
+                BorderStyle = BorderStyle.None,
+                Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                TextAlign = HorizontalAlignment.Center
+            };
+
+            numExpectedCount.ValueChanged += (s, e) => {
+                _module.ExpectedObjectCount = (int)numExpectedCount.Value;
+
+                // Meghívjuk a publikussá tett gráf-frissítő metódust
+                if (_mainEditor != null)
+                {
+                    _mainEditor.RunPipelineDebug();
+                }
+            };
+
+
+
             // 3. SZAKASZ: MATCH PARAMETERS (Értékek állítása)
             Label lblSection2 = new Label { Text = "MATCH PARAMETERS", ForeColor = Color_Cyan, Font = new Font("Segoe UI", 8, FontStyle.Bold), Location = new Point(10, 225), AutoSize = true };
 
@@ -128,17 +156,92 @@ namespace FlexVision
             this.Controls.Add(lblAngle); this.Controls.Add(numAngle); this.Controls.Add(checkPolarity);
             this.Controls.Add(lblExecutionTime); this.Controls.Add(panelLedIndicator);
             this.Controls.Add(lblSection3); this.Controls.Add(listViewResults);
-
+            this.Controls.Add(lblExpected);
+            this.Controls.Add(numExpectedCount);
             // Bekötjük a teszt és kijelölő eseményeket
             btnTest.Click += BtnTest_Click;
         }
 
+        /*
         private Button CreateControlBtn(string text, int x, int y, int w, int h, Color? customColor = null)
         {
             Button btn = new Button { Text = text, Location = new Point(x, y), Width = w, Height = h, FlatStyle = FlatStyle.Flat, ForeColor = customColor ?? Color_Text, BackColor = Color_Light, Font = new Font("Segoe UI", 7.5f, FontStyle.Bold), Cursor = Cursors.Hand };
             btn.FlatAppearance.BorderSize = 0;
             return btn;
         }
+        
+        // ====================================================================
+        // --- JAVÍTÁS: TISZTA COLOR ALAPÚ UNIVERZÁLIS GOMB GYÁRTÓ RETESZ ---
+        // ====================================================================
+        private Button CreateControlBtn(string text, int x, int y, int w, int h, Color customColor = default(Color))
+        {
+            // Megvizsgáljuk, hogy átadtunk-e egyedi színt. Ha üres (default), a Color_Text-et használjuk
+            Color finalTextColor = customColor.IsEmpty ? Color_Text : customColor;
+
+            Button btn = new Button
+            {
+                Text = text,
+                Location = new Point(x, y),
+                Width = w,
+                Height = h,
+                FlatStyle = FlatStyle.Flat,
+                ForeColor = finalTextColor, // Garantáltan tiszta, nem-nullable struktúrát kap a WinForms!
+                BackColor = Color_Light,
+                Font = new Font("Segoe UI", 7.5f, FontStyle.Bold),
+                Cursor = Cursors.Hand
+            };
+
+            btn.FlatAppearance.BorderSize = 0;
+            return btn;
+        }
+        */
+
+        // ====================================================================
+        // --- VÉGLEGES JAVÍTÁS: GOLYÓÁLLÓ NATÍV PAINT OVERRIDE RETESZ ---
+        // ====================================================================
+        private Button CreateControlBtn(string text, int x, int y, int w, int h, Color customColor = default(Color))
+        {
+            Color finalTextColor = customColor.IsEmpty ? Color_Text : customColor;
+
+            Button btn = new Button
+            {
+                Text = "", // KIKOMMENTEZZÜK A GYÁRI FELIRATOT, hogy ne rajzolja alá duplán a Windows!
+                Location = new Point(x, y),
+                Width = w,
+                Height = h,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color_Light,
+                Cursor = Cursors.Hand
+            };
+
+            btn.FlatAppearance.BorderSize = 0;
+
+            // --- HARDVERES GRAFIKUS FELÜLBÍRÁLÓ KAPCSOLÓ ---
+            btn.Paint += (s, ev) => {
+                // Megkérjük a grafikus kártyát, hogy használjon élsimítást a tiszta szövegért
+                ev.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                ev.Graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+                // Létrehozzuk a garantáltan a kért színű (pl. LightGreen) egyedi ipari ecsetet
+                using (SolidBrush textBrush = new SolidBrush(finalTextColor))
+                {
+                    // Beállítjuk a katonás, középre igazított szövegformázást
+                    using (StringFormat sf = new StringFormat())
+                    {
+                        sf.Alignment = StringAlignment.Center;
+                        sf.LineAlignment = StringAlignment.Center;
+
+                        // Tűpontosan a gomb mértani közepére rajzoljuk a szöveget és a ▶ ikont!
+                        Rectangle textRect = new Rectangle(0, 0, btn.Width, btn.Height);
+                        ev.Graphics.DrawString(text, new Font("Segoe UI", 7.5f, FontStyle.Bold), textBrush, textRect, sf);
+                    }
+                }
+            };
+
+            return btn;
+        }
+
+
 
         private void UpdateTemplateUI()
         {
@@ -148,12 +251,14 @@ namespace FlexVision
                 picTemplatePreview.Image = _module.Templates[_module.ActiveTemplateIndex];
                 lblTemplateCounter.Text = $"{_module.ActiveTemplateIndex + 1} / {_module.Templates.Count}";
                 btnDeleteTemplate.Enabled = true;
+                btnTest.Enabled = true;
             }
             else
             {
                 picTemplatePreview.Image = null;
                 lblTemplateCounter.Text = "0 / 0";
                 btnDeleteTemplate.Enabled = false;
+                btnTest.Enabled = false;
             }
         }
 

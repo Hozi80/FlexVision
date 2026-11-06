@@ -2,13 +2,26 @@
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Drawing;
+using System.Windows.Forms;
 using Emgu.CV;
 using Emgu.CV.CvEnum;
 using Emgu.CV.Structure;
 using Emgu.CV.Util;
+using System.Linq;
 
 namespace FlexVision
 {
+
+
+    // --- ÚJ: IPARI MODUL STÁTUSZ ENUM ---
+    public enum ModuleStatus
+    {
+        NotExecuted, // Még nem futott le
+        Success,     // Hiba nélkül lefutott
+        Warning,     // Lefutott, de pl. határértéken mozog az adat
+        Failed       // Hibára futott (pl. hiányzó alkatrész)
+    }
+
     // ====================================================================
     // --- GLOBÁLIS PIPELINE ENUMOK ÉS TÍPUSOK ---
     // ====================================================================
@@ -22,38 +35,81 @@ namespace FlexVision
     // ====================================================================
     // --- ADATKÖRNYEZET (INSPECTION CONTEXT) MÉRÉSI ADATTÁRRAL ---
     // ====================================================================
+
     public class InspectionContext : IDisposable
     {
         public Image<Bgr, byte> SourceImage { get; set; }
         public Image<Gray, byte> WorkingMask { get; set; }
+        public PointF LocalOffset { get; set; } = new PointF(0, 0);
+        public double LocalAngle { get; set; } = 0.0;
 
+        // --- JAVÍTÁS: Független, szálbiztos unmanaged képtörténelem tároló ---
         public Dictionary<string, Image<Bgr, byte>> ColorHistory { get; set; } = new Dictionary<string, Image<Bgr, byte>>();
         public Dictionary<string, Image<Gray, byte>> GrayHistory { get; set; } = new Dictionary<string, Image<Gray, byte>>();
 
-        // 1. FÁZIS: KÖZPONTI GEOMETRIAI ÉS MÉRÉSI ADATTÁR (FEATURE STORE)
         public Dictionary<string, BaseFeature> Features { get; set; } = new Dictionary<string, BaseFeature>();
-
         public Dictionary<string, object> CustomData { get; set; } = new Dictionary<string, object>();
+        public List<InspectionContext> SubContexts { get; set; } = new List<InspectionContext>();
 
-        public PointF GetPointFeature(string id) => Features.ContainsKey(id) && Features[id] is PointFeature pf ? pf.Position : PointF.Empty;
-        public LineFeature GetLineFeature(string id) => Features.ContainsKey(id) && Features[id] is LineFeature lf ? lf : null;
-
-        public Image<Bgr, byte> GetInputColorImage(string stepName)
+        public Image<Bgr, byte> GetInputColorImage(string stepLink)
         {
-            if (string.IsNullOrEmpty(stepName) || !ColorHistory.ContainsKey(stepName) || stepName.StartsWith("Default"))
-                return SourceImage;
-            return ColorHistory[stepName];
+            // AUTOMATIKUS FALLBACK LOGIKA: Ha előző lépést kérünk, kiszedjük a legutoljára elmentett érvényes képet
+            if (string.IsNullOrEmpty(stepLink) || stepLink == "Default (Előző lépés)")
+            {
+                if (ColorHistory.Count > 0)
+                {
+                    var lastKey = ColorHistory.Keys.Last();
+                    if (ColorHistory[lastKey] != null && ColorHistory[lastKey].Ptr != IntPtr.Zero)
+                        return ColorHistory[lastKey].Copy(); // .Copy() = Tiszta, független C++ mély másolat!
+                }
+                return null;
+            }
+
+            // Ha konkrét lépésnevet keresünk (pl. ComboBox kijelölés alapján)
+            if (ColorHistory.ContainsKey(stepLink) && ColorHistory[stepLink] != null && ColorHistory[stepLink].Ptr != IntPtr.Zero)
+            {
+                return ColorHistory[stepLink].Copy();
+            }
+            return null;
+        }
+
+        public Image<Gray, byte> GetInputGrayImage(string stepLink)
+        {
+            if (string.IsNullOrEmpty(stepLink) || stepLink == "Default (Előző lépés)")
+            {
+                if (GrayHistory.Count > 0)
+                {
+                    var lastKey = GrayHistory.Keys.Last();
+                    if (GrayHistory[lastKey] != null && GrayHistory[lastKey].Ptr != IntPtr.Zero)
+                        return GrayHistory[lastKey].Copy();
+                }
+                return null;
+            }
+
+            if (GrayHistory.ContainsKey(stepLink) && GrayHistory[stepLink] != null && GrayHistory[stepLink].Ptr != IntPtr.Zero)
+            {
+                return GrayHistory[stepLink].Copy();
+            }
+            return null;
         }
 
         public void Dispose()
         {
-            if (SourceImage != null) { SourceImage.Dispose(); SourceImage = null; }
-            if (WorkingMask != null) { WorkingMask.Dispose(); WorkingMask = null; }
+            SourceImage?.Dispose();
+            WorkingMask?.Dispose();
+
+            // Biztonságos unmanaged erőforrás-felszabadítás
             foreach (var img in ColorHistory.Values) img?.Dispose();
             foreach (var img in GrayHistory.Values) img?.Dispose();
+
             ColorHistory.Clear();
             GrayHistory.Clear();
-            Features.Clear();
+
+            if (SubContexts != null)
+            {
+                foreach (var sub in SubContexts) sub.Dispose();
+                SubContexts.Clear();
+            }
         }
     }
 
@@ -64,43 +120,52 @@ namespace FlexVision
     {
         string Name { get; }
         VisionModuleType ModuleType { get; }
+        ModuleStatus Status { get; }
+        double ProcessingTimeMs { get; }
+
         void Process(InspectionContext context);
     }
 
     // ====================================================================
-    // --- KÖZÖS IPARI MODUL ALAPOSZTÁLY (DINAMIKUS SORSZÁMOZÁSSAL) ---
+    // --- KÖZÖS IPARI MODUL ALAPOSZTÁLY (GOLYÓÁLLÓ FIXTURE RÉTEG) ---
     // ====================================================================
     [Serializable]
     public abstract class BaseInspectionModule : IInspectionModule
     {
-        // ÚJ: Futásidőben itt tároljuk el, hogy a modul éppen hányadik a sorban
         [System.ComponentModel.Browsable(false)]
         public int StepIndex { get; set; } = 1;
 
-        // Absztrakt tiszta név a sorszám nélkül (ezt adják meg az egyedi modulok)
         [System.ComponentModel.Browsable(false)]
         public abstract string PureName { get; }
 
-        // AUTOMATIKUS DINAMIKUS NÉVGENERÁLÁS: Mindig a valós sorszámmal dekorálja ki a nevet!
         [System.ComponentModel.Browsable(false)]
         public string Name => $"{StepIndex:D2}. {PureName}";
 
         [System.ComponentModel.Browsable(false)]
         public abstract VisionModuleType ModuleType { get; }
+
+        [Category("Diagnosztika"), Description("A modul legutóbbi futásának állapota."), ReadOnly(true)]
+        public ModuleStatus Status { get; set; } = ModuleStatus.NotExecuted;
+
+        [Category("Diagnosztika"), Description("A modul futási ideje ezredmásodpercben (ms)."), ReadOnly(true)]
+        public double ProcessingTimeMs { get; set; } = 0.0;
+
         public abstract void Process(InspectionContext context);
 
+        // --- COMMON PARAMÉTEREK A COMBOBOXOK SZÁMÁRA (EZ HIÁNYZOTT!) ---
         [Category("Common - Bemenet")]
-        [TypeConverter(typeof(InputStepNameConverter))]
-        [Description("Válaszd ki, hogy ez a modul melyik korábbi lépés képén fusson le.")]
         public string InputStepLink { get; set; } = "Default (Előző lépés)";
 
-        [Category("Common - Offset Igazítás")]
-        [TypeConverter(typeof(ReferenceFeatureConverter))]
-        [Description("Válaszd ki azt a korábbi bázis-mérést, aminek az eltolódását ennek a modulnak követnie kell.")]
-        public string ReferenceFeatureLink { get; set; } = "None (Fix koordináta, nincs követés)";
+        [Category("Common - Offset (X Tengely)")]
+        public string ReferenceXSrc { get; set; } = "None (Fix koordináta)";
+
+        [Category("Common - Offset (Y Tengely)")]
+        public string ReferenceYSrc { get; set; } = "None (Fix koordináta)";
+
+        [Category("Common - Offset (Rotáció)")]
+        public string ReferenceRotSrc { get; set; } = "None (Fix elfordulás)";
 
         [Category("Common - Névkezelés")]
-        [Description("A modul egyedi eredmény-neve a központi adattárban. Ha üres, automatikusan generálódik.")]
         public string CustomFeatureName { get; set; } = "";
 
         [System.ComponentModel.Browsable(false)]
@@ -113,7 +178,6 @@ namespace FlexVision
             }
         }
     }
-
     // ====================================================================
     // --- MÓDOSÍTOTT IMAGE LOAD MODUL ---
     // ====================================================================
@@ -127,7 +191,7 @@ namespace FlexVision
         public override VisionModuleType ModuleType => VisionModuleType.ImageLoad;
 
         [Category("Module Specific - Fájl Beállítások"), Description("A vizsgálandó kép abszolút elérési útja.")]
-        public string FilePath { get; set; } = @"C:\Test\wire.bmp";
+        public string FilePath { get; set; } = @"C:\Test\boundtest3.bmp";
 
         public ImageLoadModule() { }
 
@@ -148,7 +212,7 @@ namespace FlexVision
     [Serializable]
     public class HistogramEqualizationModule : BaseInspectionModule
     {
-        [Browsable(false)] public override string PureName => "Histogram Equalization (Kontraszt)";
+        [Browsable(false)] public override string PureName => "Histogram Equalization";
         [Browsable(false)] public override VisionModuleType ModuleType => VisionModuleType.OtsuFusion;
         public HistogramEqualizationModule() { }
         public override void Process(InspectionContext context)
@@ -168,7 +232,7 @@ namespace FlexVision
     [Serializable]
     public class GammaCorrectionModule : BaseInspectionModule
     {
-        [Browsable(false)] public override string PureName => "Gamma Correction (Fényerő kiegyenlítés)";
+        [Browsable(false)] public override string PureName => "Gamma Correction";
         [Browsable(false)] public override VisionModuleType ModuleType => VisionModuleType.OtsuFusion;
         [Category("Gamma"), Description("Gamma érték. < 1.0 sötétít, > 1.0 világosítja a részleteket.")]
         public double Gamma { get; set; } = 1.2;
@@ -193,7 +257,7 @@ namespace FlexVision
     [Serializable]
     public class SimpleThresholdModule : BaseInspectionModule
     {
-        [Browsable(false)] public override string PureName => "Thresholding (Fix Küszöbölés)";
+        [Browsable(false)] public override string PureName => "Thresholding";
         [Browsable(false)] public override VisionModuleType ModuleType => VisionModuleType.OtsuFusion;
         [Category("Küszöb"), Description("Fix fényerő határérték (0 - 255).")]
         public double ThresholdValue { get; set; } = 128;
@@ -218,7 +282,7 @@ namespace FlexVision
     [Serializable]
     public class BoxFilterModule : BaseInspectionModule
     {
-        [Browsable(false)] public override string PureName => "Box Filter (Átlagoló elmosás)";
+        [Browsable(false)] public override string PureName => "Box Filter";
         [Browsable(false)] public override VisionModuleType ModuleType => VisionModuleType.OtsuFusion;
         [Category("Kernel"), Description("Ablakméret.")] public int KernelSize { get; set; } = 5;
         public BoxFilterModule() { }
@@ -235,7 +299,7 @@ namespace FlexVision
     [Serializable]
     public class MedianFilterModule : BaseInspectionModule
     {
-        [Browsable(false)] public override string PureName => "Median Filter (Só-bors zajszűrés)";
+        [Browsable(false)] public override string PureName => "Median Filter";
         [Browsable(false)] public override VisionModuleType ModuleType => VisionModuleType.OtsuFusion;
         [Category("Kernel"), Description("Ablakméret (Páratlan pozitív szám).")] public int KernelSize { get; set; } = 5;
         public MedianFilterModule() { }
@@ -253,7 +317,7 @@ namespace FlexVision
     [Serializable]
     public class BilateralFilterModule : BaseInspectionModule
     {
-        [Browsable(false)] public override string PureName => "Bilateral Filter (Élmegőrző simítás)";
+        [Browsable(false)] public override string PureName => "Bilateral Filter";
         [Browsable(false)] public override VisionModuleType ModuleType => VisionModuleType.OtsuFusion;
         [Category("Bilateral"), Description("Pixel környezet átmérője.")] public int Diameter { get; set; } = 9;
         [Category("Bilateral"), Description("Színtartomány szórása.")] public double SigmaColor { get; set; } = 75;
@@ -275,7 +339,7 @@ namespace FlexVision
     [Serializable]
     public class SobelFilterModule : BaseInspectionModule
     {
-        [Browsable(false)] public override string PureName => "Sobel Edge Detector (Gradiens élek)";
+        [Browsable(false)] public override string PureName => "Sobel Detector";
         [Browsable(false)] public override VisionModuleType ModuleType => VisionModuleType.OtsuFusion;
         [Category("Sobel"), Description("X irányú deriválás.")] public int Dx { get; set; } = 1;
         [Category("Sobel"), Description("Y irányú deriválás.")] public int Dy { get; set; } = 0;
@@ -298,7 +362,7 @@ namespace FlexVision
     [Serializable]
     public class LaplacianFilterModule : BaseInspectionModule
     {
-        [Browsable(false)] public override string PureName => "Laplace Filter (Másodrendű élek)";
+        [Browsable(false)] public override string PureName => "Laplace Filter";
         [Browsable(false)] public override VisionModuleType ModuleType => VisionModuleType.OtsuFusion;
         [Category("Laplace"), Description("Aperture ablakméret (Páratlan szám).")] public int ApertureSize { get; set; } = 3;
         public LaplacianFilterModule() { }
@@ -320,7 +384,7 @@ namespace FlexVision
     [Serializable]
     public class UnsharpMaskingModule : BaseInspectionModule
     {
-        [Browsable(false)] public override string PureName => "Unsharp Masking (Élesítés)";
+        [Browsable(false)] public override string PureName => "Unsharp Masking";
         [Browsable(false)] public override VisionModuleType ModuleType => VisionModuleType.OtsuFusion;
         [Category("Élesítés"), Description("Elmosási sugár.")] public int BlurSize { get; set; } = 5;
         [Category("Élesítés"), Description("Élesítési súlyszorzó.")] public double Weight { get; set; } = 1.5;
@@ -346,7 +410,7 @@ namespace FlexVision
     [Serializable]
     public class AdvancedMorphologyModule : BaseInspectionModule
     {
-        [Browsable(false)] public override string PureName => "Morphological Operations (Alakzat-módosítás)";
+        [Browsable(false)] public override string PureName => "Morphological Operations";
         [Browsable(false)] public override VisionModuleType ModuleType => VisionModuleType.OtsuFusion;
         [Category("Morfológia"), Description("Művelet típusa: Erode, Dilate, Open, Close.")]
         public MorphOp Operation { get; set; } = MorphOp.Open;
@@ -376,7 +440,7 @@ namespace FlexVision
     [Serializable]
     public class GaussianBlurModule : BaseInspectionModule
     {
-        [Browsable(false)] public override string PureName => "Gaussian Blur (Zajszűrés)";
+        [Browsable(false)] public override string PureName => "Gaussian Blur";
         [Browsable(false)] public override VisionModuleType ModuleType => VisionModuleType.OtsuFusion;
 
         [Category("Module Specific - Szűrő Beállítások")]
@@ -421,7 +485,7 @@ namespace FlexVision
     [Serializable]
     public class CannyEdgeModule : BaseInspectionModule
     {
-        [Browsable(false)] public override string PureName => "Canny Edge Detector (Élkereső)";
+        [Browsable(false)] public override string PureName => "Canny Edge Detector";
         [Browsable(false)] public override VisionModuleType ModuleType => VisionModuleType.OtsuFusion;
 
         [Category("Module Specific - Canny Beállítások")]
@@ -458,44 +522,208 @@ namespace FlexVision
         }
     }
 
+
     // ====================================================================
-    // --- 06. MODUL: COLOR INRANGE FILTER (BGR / RGB SZÍNSZŰRŐ) ---
+    // --- 05. CSOPORT: LOKÁLIS ALKALMAZKODÓ KÜSZÖBÖLÉS (ADAPTIVE THRESHOLD) ---
     // ====================================================================
     [Serializable]
-    public class ColorInRangeModule : BaseInspectionModule
+    public class AdaptiveThresholdModule : BaseInspectionModule
     {
-        [Browsable(false)] public override string PureName => "Color InRange Filter (Színszűrés)";
+        [Browsable(false)] public override string PureName => "Adaptive Threshold";
         [Browsable(false)] public override VisionModuleType ModuleType => VisionModuleType.OtsuFusion;
 
-        // BGR sávok alsó és felső határértékei a Pick Color funkcióhoz és a csúszkákhoz
-        [Category("Module Specific - Alsó Színhatár (BGR)")] public byte MinBlue { get; set; } = 0;
-        [Category("Module Specific - Alsó Színhatár (BGR)")] public byte MinGreen { get; set; } = 0;
-        [Category("Module Specific - Alsó Színhatár (BGR)")] public byte MinRed { get; set; } = 0;
+        [Category("Adaptive Threshold"), Description("A lokális ablakméret pixelben, amin belül a fényerő-átlagot számoljuk (Páratlan szám, pl. 3, 11, 21, 55).")]
+        public int BlockSize { get; set; } = 11;
 
-        [Category("Module Specific - Felső Színhatár (BGR)")] public byte MaxBlue { get; set; } = 255;
-        [Category("Module Specific - Felső Színhatár (BGR)")] public byte MaxGreen { get; set; } = 255;
-        [Category("Module Specific - Felső Színhatár (BGR)")] public byte MaxRed { get; set; } = 255;
+        [Category("Adaptive Threshold"), Description("Konstans érték, amit levonunk a kiszámolt átlagból (finomhangolás a zajok ellen).")]
+        public double ConstantC { get; set; } = 2.0;
 
-        public ColorInRangeModule() { }
+        public AdaptiveThresholdModule() { }
 
         public override void Process(InspectionContext context)
         {
             Image<Bgr, byte> inputImg = context.GetInputColorImage(this.InputStepLink);
             if (inputImg == null) return;
 
-            Image<Gray, byte> binaryMask = new Image<Gray, byte>(inputImg.Width, inputImg.Height);
+            int bSize = BlockSize;
+            if (bSize % 2 == 0) bSize++;
+            if (bSize < 3) bSize = 3;
 
-            // Definiáljuk az EmguCV színhatár-skálákat
-            MCvScalar lowerBound = new MCvScalar(MinBlue, MinGreen, MinRed);
-            MCvScalar upperBound = new MCvScalar(MaxBlue, MaxGreen, MaxRed);
+            using (Image<Gray, byte> gray = inputImg.Convert<Gray, byte>())
+            {
+                Image<Gray, byte> binary = new Image<Gray, byte>(gray.Width, gray.Height);
 
-            // Lefuttatjuk a színszűrést, ami a megadott BGR sáv közé eső pixeleket fehérré (255), a többit feketévé (0) teszi
-            CvInvoke.InRange(inputImg, new ScalarArray(lowerBound), new ScalarArray(upperBound), binaryMask);
+                CvInvoke.AdaptiveThreshold(
+                    gray,
+                    binary,
+                    255,
+                    AdaptiveThresholdType.MeanC,
+                    ThresholdType.Binary,
+                    bSize,
+                    ConstantC
+                );
 
-            if (context.WorkingMask != null) context.WorkingMask.Dispose();
-            context.WorkingMask = binaryMask;
+                if (context.WorkingMask != null) context.WorkingMask.Dispose();
+                context.WorkingMask = binary;
+            }
         }
     }
+
+
+
+    public enum ColorSpaceType { BGR, HSV, LAB }
+
+    [Serializable]
+    public class ColorInRangeModule : BaseInspectionModule
+    {
+        [Browsable(false)] public override string PureName => "Color Filter";
+        [Browsable(false)] public override VisionModuleType ModuleType => VisionModuleType.OtsuFusion;
+
+        [System.ComponentModel.Browsable(false)]
+        public bool IsFilterActivated { get; set; } = false;
+
+        [Category("Module Specific - Színtér"), Description("A szűréshez használt ipari színtér (BGR, HSV vagy LAB).")]
+        public ColorSpaceType ActiveColorSpace { get; set; } = ColorSpaceType.BGR;
+
+        [Category("Module Specific - Csatorna Korlátok")] public byte MinCh1 { get; set; } = 100;
+        [Category("Module Specific - Csatorna Korlátok")] public byte MaxCh1 { get; set; } = 150;
+        [Category("Module Specific - Csatorna Korlátok")] public byte MinCh2 { get; set; } = 100;
+        [Category("Module Specific - Csatorna Korlátok")] public byte MaxCh2 { get; set; } = 150;
+        [Category("Module Specific - Csatorna Korlátok")] public byte MinCh3 { get; set; } = 100;
+        [Category("Module Specific - Csatorna Korlátok")] public byte MaxCh3 { get; set; } = 150;
+
+        [Category("Module Specific - Overlay Vizuál")] public byte OverlayBlue { get; set; } = 0;
+        [Category("Module Specific - Overlay Vizuál")] public byte OverlayGreen { get; set; } = 255;
+        [Category("Module Specific - Overlay Vizuál")] public byte OverlayRed { get; set; } = 255;
+
+        [Category("Module Specific - Szűrés"), Description("Ha igaz, a kimeneti bináris maszk megfordul (a fekete és fehér pixelek felcserélődnek).")]
+        public bool IsInverted { get; set; } = false;
+
+        // ====================================================================
+        // --- ÚJ RECEPT PARAMÉTER: CSAK MASZK TOVÁBBKÜLDÉSE ---
+        // ====================================================================
+        [Category("Module Specific - Szűrés"), Description("Ha be van kapcsolva, a modul csak a tiszta fekete-fehér bináris maszkot küldi tovább a következő moduloknak az overlay helyett.")]
+        public bool OnlyMask { get; set; } = false;
+
+        public ColorInRangeModule() { }
+
+        public override void Process(InspectionContext context)
+        {
+            Console.WriteLine("ColorInRange Process Start");
+
+            // 1. Biztonságos képbeolvasás a javított láncból vagy az al-pipeline-ból
+            Image<Bgr, byte> inputImg = context.GetInputColorImage(this.InputStepLink);
+            if (inputImg == null)
+            {
+                if (context.SourceImage != null && context.SourceImage.Ptr != IntPtr.Zero)
+                    inputImg = context.SourceImage.Copy();
+            }
+
+            // Golyóálló hardveres mutató-ellenőrzés
+            if (inputImg == null || inputImg.Ptr == System.IntPtr.Zero) return;
+
+            // --- 2. FÁZIS: INAKTÍV ÁLLAPOT KEZELÉSE (TISZTA FALLBACK OVERLAY) ---
+            if (!IsFilterActivated)
+            {
+                if (context.WorkingMask != null) context.WorkingMask.Dispose();
+                context.WorkingMask = inputImg.Convert<Gray, byte>();
+
+                context.SourceImage?.Dispose();
+                context.SourceImage = inputImg.Copy();
+                inputImg.Dispose();
+                return;
+            }
+
+            // --- 3. FÁZIS: AKTÍV ADAPTÍV SZŰRÉS ---
+            using (Image<Gray, byte> binaryMask = new Image<Gray, byte>(inputImg.Size))
+            {
+                // Garantált 8-bites csatornaillesztés az unmanaged OpenCV C++ mag felé
+                MCvScalar lowerBound = new MCvScalar(MinCh1, MinCh2, MinCh3);
+                MCvScalar upperBound = new MCvScalar(MaxCh1, MaxCh2, MaxCh3);
+
+                if (ActiveColorSpace == ColorSpaceType.BGR)
+                {
+                    CvInvoke.InRange(inputImg, new ScalarArray(lowerBound), new ScalarArray(upperBound), binaryMask);
+                }
+                else
+                {
+                    using (Mat convertedMat = new Mat())
+                    {
+                        if (ActiveColorSpace == ColorSpaceType.HSV)
+                        {
+                            CvInvoke.CvtColor(inputImg, convertedMat, ColorConversion.Bgr2Hsv);
+                        }
+                        else if (ActiveColorSpace == ColorSpaceType.LAB)
+                        {
+                            CvInvoke.CvtColor(inputImg, convertedMat, ColorConversion.Bgr2Lab);
+                        }
+
+                        CvInvoke.InRange(convertedMat, new ScalarArray(lowerBound), new ScalarArray(upperBound), binaryMask);
+                    }
+                }
+
+                // ====================================================================
+                // --- INTELIGENS KIMENETI MASZK INVERTÁLÓ RETESZ (BITWISE NOT) ---
+                // ====================================================================
+                if (IsInverted)
+                {
+                    CvInvoke.BitwiseNot(binaryMask, binaryMask);
+                }
+
+                // Mentjük a kiszámolt maszkot a láncoláshoz a rákövetkező Threshold/Edge modulnak
+                if (context.WorkingMask != null) context.WorkingMask.Dispose();
+                context.WorkingMask = binaryMask.Copy();
+
+                // Debug mentés a lemezre ellenőrzéshez
+                binaryMask.Save(@"C:\Test\binarymask.bmp");
+
+                // Diagnosztikai pixelszámlálás a Console ablakba
+                int pixels = CvInvoke.CountNonZero(binaryMask);
+                Console.WriteLine($"Active ColorSpace: {ActiveColorSpace} | Inverted: {IsInverted} | Real Mask pixels: {pixels}");
+
+                // ====================================================================
+                // --- JAVÍTÁS: ÚJ KIMENETI STRATÉGIA VÁLASZTÓ REKESZ ---
+                // ====================================================================
+                if (this.OnlyMask)
+                {
+                    // --- STRATÉGIA [A]: ONLY MASK ÜZEMMÓD ---
+                    // Konvertáljuk a bináris maszkot 3-csatornás BGR képpé (tiszta fekete-fehér kép lesz)
+                    // Ez kötelező, mert a context.SourceImage-nek 3-csatornás RGB/BGR formátumúnak kell lennie a UI felé!
+                    Image<Bgr, byte> pureBinaryOutput = binaryMask.Convert<Bgr, byte>();
+
+                    context.SourceImage?.Dispose();
+                    context.SourceImage = pureBinaryOutput.Copy();
+
+                    // Frissítjük a színes előzménytárat is a következő modulok számára
+                    context.ColorHistory[this.Name] = pureBinaryOutput.Copy();
+                    pureBinaryOutput.Dispose();
+                }
+                else
+                {
+                    // --- STRATÉGIA [B]: STANDARD OVERLAY ÜZEMMÓD ---
+                    using (Image<Bgr, byte> colorMask = new Image<Bgr, byte>(inputImg.Size))
+                    using (Image<Bgr, byte> overlayOutput = new Image<Bgr, byte>(inputImg.Size))
+                    {
+                        colorMask.SetValue(new MCvScalar(OverlayBlue, OverlayGreen, OverlayRed));
+
+                        using (Image<Bgr, byte> maskedYellow = new Image<Bgr, byte>(inputImg.Size))
+                        {
+                            CvInvoke.BitwiseAnd(colorMask, colorMask, maskedYellow, binaryMask);
+                            CvInvoke.AddWeighted(inputImg, 1, maskedYellow, 1, 0, overlayOutput);
+                        }
+
+                        context.SourceImage?.Dispose();
+                        context.SourceImage = overlayOutput.Copy();
+                        context.ColorHistory[this.Name] = overlayOutput.Copy();
+                    }
+                }
+            }
+
+            inputImg.Dispose();
+            Console.WriteLine("ColorInRange Process End");
+        }
+    }
+
 
 
     // ====================================================================
@@ -505,7 +733,7 @@ namespace FlexVision
     public class OtsuSuperFusionModule : BaseInspectionModule
     {
         [System.ComponentModel.Browsable(false)]
-        public override string PureName => "Otsu Super Fusion (2R + H + 2L)"; // Tisztított név
+        public override string PureName => "Otsu Filter"; // Tisztított név
 
         [System.ComponentModel.Browsable(false)]
         public override VisionModuleType ModuleType => VisionModuleType.OtsuFusion;
@@ -528,20 +756,86 @@ namespace FlexVision
         }
     }
     // ====================================================================
-    // --- REFERENCIA VÁLASZTÓ LEGÖRDÜLŐ MENÜ CONVERTEREK ---
+    // --- INTELIGENS, DINAMIKUS HIERARCHIKUS POZÍCIÓ-REFERENCIA KONVERTER ---
     // ====================================================================
     public class ReferenceFeatureConverter : StringConverter
     {
         public override bool GetStandardValuesSupported(ITypeDescriptorContext context) => true;
         public override bool GetStandardValuesExclusive(ITypeDescriptorContext context) => true;
+
         public override StandardValuesCollection GetStandardValues(ITypeDescriptorContext context)
         {
-            List<string> references = new List<string>
+            List<string> dynamicReferences = new List<string>
+            {
+                "None (Fix koordináta, nincs követés)"
+            };
+
+            try
+            {
+                // Windows Forms trükk: A PropertyGrid környezetéből (context) vissza tudunk nyúlni a fő felülethez!
+                if (context != null && context.Instance != null)
                 {
-                    "None (Fix koordináta, nincs követés)",
-                    "Template_Matching_Multi_Sablon"
-                };
-            return new StandardValuesCollection(references);
+                    // Lekérjük a jelenleg érvényes receptet a memóriából.
+                    // Ehhez feltételezzük, hogy a PipelineEditorControl-on keresztül elérhetjük az aktuális lépéseket.
+                    // Hogy golyóálló legyen, egy belső statikus hivatkozáson vagy a felületi struktúrán keresünk:
+
+                    // Keressük a Pipeline listát a memóriában a kódolt láncon keresztül
+                    List<IInspectionModule> activeSteps = null;
+
+                    // Megpróbáljuk megkeresni a fő szerkesztőt a vizuális fában
+                    Control targetControl = context.Container as Control;
+                    if (targetControl == null && context.Instance is BaseInspectionModule mod)
+                    {
+                        // Ha közvetlenül a modulból hívták meg, megpróbáljuk elérni a globális statikus tárat
+                        activeSteps = ReceptRegistry.ActiveSteps;
+                    }
+
+                    if (activeSteps != null)
+                    {
+                        foreach (var step in activeSteps)
+                        {
+                            if (step is BaseInspectionModule bMod)
+                            {
+                                string baseKey = bMod.EffectiveFeatureName;
+
+                                // 1. Szint: Maga a Főmodul (pl. "TemplateMatch")
+                                dynamicReferences.Add(baseKey);
+
+                                // 2. Szint: Dinamikus al-ágak automatikus generálása a modul típusa szerint!
+                                // Ha ez egy sablonkereső, akkor a Bond-welding logikád alapján felkínáljuk az al-ágait:
+                                if (step is TemplateMatchModule)
+                                {
+                                    dynamicReferences.Add($"{baseKey}.EdgeBased");
+                                    dynamicReferences.Add($"{baseKey}.EdgeBased.Edge1");
+                                    dynamicReferences.Add($"{baseKey}.EdgeBased.Edge2");
+                                    dynamicReferences.Add($"{baseKey}.EdgeBased.WireEnd");
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Fallback gyári teszt-struktúra a betöltés idejére, amíg a vizuális fa még nem épült fel
+                        dynamicReferences.Add("02_Template_Matching_Multi_Sablon");
+                        dynamicReferences.Add("02_Template_Matching_Multi_Sablon.EdgeBased");
+                        dynamicReferences.Add("02_Template_Matching_Multi_Sablon.EdgeBased.Edge1");
+                        dynamicReferences.Add("02_Template_Matching_Multi_Sablon.EdgeBased.Edge2");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Dinamikus referencia generálási hiba: " + ex.Message);
+            }
+
+            return new StandardValuesCollection(dynamicReferences);
         }
     }
+
+    // Egy parányi globális regiszter, hogy a konverter a felülettől függetlenül is mindig lássa az aktuális lépéseket
+    public static class ReceptRegistry
+    {
+        public static List<IInspectionModule> ActiveSteps { get; set; } = new List<IInspectionModule>();
+    }
+
 }

@@ -13,6 +13,8 @@ namespace FlexVision
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+            UserSession.Instance.Login("Developer", UserRole.Administrator);
+            HardwareAccelerator.Initialize();
             Application.Run(new MainVisionForm()); // Ez indítja az új indusztriális keretrendszert
         }
     }

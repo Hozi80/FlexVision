@@ -1,0 +1,151 @@
+        public void RunPipelineDebug(int stepDirection = 0)
+        {
+            int idx = listBoxPipeline.SelectedIndex;
+            if (idx < 0) return;
+
+            using (InspectionContext mainContext = new InspectionContext())
+            {
+                // Végigfuttatjuk a teljes láncot az aktuális elemig
+                for (int i = 0; i <= idx; i++)
+                {
+                    IInspectionModule step = PipelineSteps[i];
+
+                    if (mainContext.SubContexts != null && mainContext.SubContexts.Count > 0)
+                    {
+                        foreach (var subContext in mainContext.SubContexts)
+                        {
+                            foreach (var feat in mainContext.Features) subContext.Features[feat.Key] = feat.Value;
+                            step.Process(subContext);
+                        }
+                    }
+                    else
+                    {
+                        step.Process(mainContext);
+                    }
+
+                    // ====================================================================
+                    // --- JAVÍTÁS: TISZTA IMAGE.COPY() ALAPÚ TÖRTÉNELEMMENTÉS ---
+                    // ====================================================================
+                    // A .Copy() metódus fizikailag új unmanaged memóriatérbe menti a képeket.
+                    // Így a szótárak tartalma teljesen függetlenné válik a mainContext életciklusától!
+                    if (mainContext.SubContexts != null && mainContext.SubContexts.Count > 0)
+                    {
+                        int activeIndex = Math.Min(_activeSubLoopIndex, mainContext.SubContexts.Count - 1);
+                        var activeSub = mainContext.SubContexts[activeIndex];
+
+                        if (activeSub.SourceImage != null && activeSub.SourceImage.Ptr != IntPtr.Zero)
+                            mainContext.ColorHistory[step.Name] = activeSub.SourceImage.Copy();
+
+                        if (activeSub.WorkingMask != null && activeSub.WorkingMask.Ptr != IntPtr.Zero)
+                            mainContext.GrayHistory[step.Name] = activeSub.WorkingMask.Copy();
+                    }
+                    else
+                    {
+                        if (mainContext.SourceImage != null && mainContext.SourceImage.Ptr != IntPtr.Zero)
+                            mainContext.ColorHistory[step.Name] = mainContext.SourceImage.Copy();
+
+                        if (mainContext.WorkingMask != null && mainContext.WorkingMask.Ptr != IntPtr.Zero)
+                            mainContext.GrayHistory[step.Name] = mainContext.WorkingMask.Copy();
+                    }
+                }
+
+                // --- AL-PIPELINE VEZÉRLŐ PANEL AKTIVÁLÁSA ÉS LAPOZÁSA ---
+                if (mainContext.SubContexts != null && mainContext.SubContexts.Count > 1)
+                {
+                    panelSubLoopNavigator.Visible = true;
+                    _activeSubLoopIndex = (_activeSubLoopIndex + stepDirection + mainContext.SubContexts.Count) % mainContext.SubContexts.Count;
+                    lblSubCounter.Text = $"{_activeSubLoopIndex + 1} / {mainContext.SubContexts.Count}";
+                }
+                else
+                {
+                    panelSubLoopNavigator.Visible = false;
+                    _activeSubLoopIndex = 0;
+                }
+
+                // ====================================================================
+                // --- VÉGLEGES IPARI KIJELZÉSI RECEPT (LOGIKAI SORREND KORREKCIÓ) ---
+                // ====================================================================
+                IInspectionModule currentModule = PipelineSteps[idx];
+                Bitmap oldBmp = imageBoxExMain.Image as Bitmap;
+                imageBoxExMain.Image = null;
+
+                // --- 1. SETUP MÓD RETESZ: HA ÉPPEN BETANÍTÁS VAGY EDITÁLÁS ZAJLIK ---
+                if (_isSelectingTemplate || _isSelectingRoi)
+                {
+                    string firstStepName = PipelineSteps[0].Name;
+
+                    if (mainContext.ColorHistory.Count > 0 && mainContext.ColorHistory.ContainsKey(firstStepName))
+                    {
+                        var firstImg = mainContext.ColorHistory[firstStepName];
+                        if (firstImg != null && firstImg.Ptr != IntPtr.Zero)
+                        {
+                            using (Image<Bgr, byte> img = firstImg.Copy())
+                            {
+                                imageBoxExMain.Image = img.ToBitmap();
+                            }
+                        }
+                    }
+                    else if (mainContext.SourceImage != null && mainContext.SourceImage.Ptr != IntPtr.Zero)
+                    {
+                        imageBoxExMain.Image = mainContext.SourceImage.ToBitmap();
+                    }
+                }
+                // --- 2. JAVÍTÁS: HA KIFEJEZETTEN A SABLONKERESŐN ÁLLUNK, A NAGY KÉPET MUTATJUK A KERESZTEKKEL ---
+                else if (currentModule is TemplateMatchModule)
+                {
+                    if (mainContext.SourceImage != null && mainContext.SourceImage.Ptr != IntPtr.Zero)
+                    {
+                        imageBoxExMain.Image = mainContext.SourceImage.ToBitmap();
+                    }
+                    else if (mainContext.WorkingMask != null && mainContext.WorkingMask.Ptr != IntPtr.Zero)
+                    {
+                        imageBoxExMain.Image = mainContext.WorkingMask.ToBitmap();
+                    }
+                }
+                // --- 3. RUN MÓD RETESZ: RÁKÖVETKEZŐ MODULOKNÁL AZ AL-PIPELINE (SUB-CONTEXT) KÉPEIT MUTATJUK ---
+                else if (mainContext.SubContexts != null && mainContext.SubContexts.Count > 0)
+                {
+                    int targetIdx = Math.Min(_activeSubLoopIndex, mainContext.SubContexts.Count - 1);
+                    var targetSub = mainContext.SubContexts[targetIdx];
+
+                    // Színszűrő pultnál az al-pipeline parciális színes képét mutatjuk az overlay-hez
+                    if (currentModule is ColorInRangeModule && targetSub.SourceImage != null && targetSub.SourceImage.Ptr != IntPtr.Zero)
+                    {
+                        imageBoxExMain.Image = targetSub.SourceImage.ToBitmap();
+                    }
+                    // Minden egyéb utólagos al-modulnál (Threshold, Canny) a fekete-fehér bináris maszkot mutatjuk
+                    else if (targetSub.WorkingMask != null && targetSub.WorkingMask.Ptr != IntPtr.Zero)
+                    {
+                        imageBoxExMain.Image = targetSub.WorkingMask.ToBitmap();
+                    }
+                    else if (targetSub.SourceImage != null && targetSub.SourceImage.Ptr != IntPtr.Zero)
+                    {
+                        imageBoxExMain.Image = targetSub.SourceImage.ToBitmap();
+                    }
+                }
+                // --- 4. NORMÁL GLOBÁLIS PIPELINE MŰKÖDÉS (HA NINCS SUB-CONTEXT GENERÁLÁS) ---
+                else
+                {
+                    // Ha Threshold, Élkereső vagy Morfológia az aktív modul, a bináris maszkot mutatjuk legfelül
+                    if (!(currentModule is ImageLoadModule || currentModule is TemplateMatchModule || currentModule is ColorInRangeModule) && mainContext.WorkingMask != null && mainContext.WorkingMask.Ptr != IntPtr.Zero)
+                    {
+                        imageBoxExMain.Image = mainContext.WorkingMask.ToBitmap();
+                    }
+                    // Kiinduló képnél a színes vizuális anyagot mutatjuk
+                    else if (mainContext.SourceImage != null && mainContext.SourceImage.Ptr != IntPtr.Zero)
+                    {
+                        imageBoxExMain.Image = mainContext.SourceImage.ToBitmap();
+                    }
+                    else if (mainContext.WorkingMask != null && mainContext.WorkingMask.Ptr != IntPtr.Zero)
+                    {
+                        imageBoxExMain.Image = mainContext.WorkingMask.ToBitmap();
+                    }
+                }
+
+                if (oldBmp != null) oldBmp.Dispose();
+
+
+            }
+        }
+
+
