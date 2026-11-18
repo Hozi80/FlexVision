@@ -8,9 +8,9 @@ using System.Numerics;
 
 namespace AOI.Inspections.EdgeBasedTemplateDetection
 {
-  public  class EdgeBasedModelInfo
-    {
-		public	int noOfCordinates = 0;     //Number of elements in coordinate array
+	public class EdgeBasedModelInfo
+	{
+		public int noOfCordinates = 0;     //Number of elements in coordinate array
 		public Point[] cordinates;      //Coordinates array to store model points	
 		public int[] cordinatesarrayX;
 		public int[] cordinatesarrayY;
@@ -30,98 +30,23 @@ namespace AOI.Inspections.EdgeBasedTemplateDetection
 
 
 
-public EdgeBasedModelInfo GetRotatedModel_SIMD(double angleDegrees)
-	{
-		double angleRadians = -angleDegrees * Math.PI / 180.0; // negatív irány, hogy egyezzen a képi forgatással
-		float cosTheta = (float)Math.Cos(angleRadians);
-		float sinTheta = (float)Math.Sin(angleRadians);
 
-		int n = this.noOfCordinates;
 
-		var rotatedModel = new EdgeBasedModelInfo
+		public EdgeBasedModelInfo GetRotatedModel(double angleDegrees)
 		{
-			noOfCordinates = n,
-			modelHeight = this.modelHeight,
-			modelWidth = this.modelWidth,
-			centerOfGravity = this.centerOfGravity,
-			Center = this.Center,
-			EdgeHeight = this.EdgeHeight,
-			EdgeWith = this.EdgeWith,
-			rotation = (int)angleDegrees,
-			MaxGradient = this.MaxGradient,
-
-			edgeDerivativeX = new float[n],
-			edgeDerivativeY = new float[n],
-			edgeMagnitude = new float[n],
-			cordinatesarrayX = new int[n],
-			cordinatesarrayY = new int[n],
-			cordinates = new Point[n]
-		};
-
-		// SIMD: gradient forgatás
-		int simdLength = Vector<float>.Count;
-		int i = 0;
-
-		for (; i <= n - simdLength; i += simdLength)
-		{
-			var gxVec = new Vector<float>(this.edgeDerivativeX, i);
-			var gyVec = new Vector<float>(this.edgeDerivativeY, i);
-
-			var gxRotVec = cosTheta * gxVec - sinTheta * gyVec;
-			var gyRotVec = sinTheta * gxVec + cosTheta * gyVec;
-
-			gxRotVec.CopyTo(rotatedModel.edgeDerivativeX, i);
-			gyRotVec.CopyTo(rotatedModel.edgeDerivativeY, i);
-
-			var magVec = Vector.SquareRoot(Vector.Add(Vector.Multiply(gxRotVec, gxRotVec), Vector.Multiply(gyRotVec, gyRotVec)));
-			magVec.CopyTo(rotatedModel.edgeMagnitude, i);
-		}
-
-		// Maradék elemek (ha nem osztható SIMD hosszra)
-		for (; i < n; i++)
-		{
-			float gx = this.edgeDerivativeX[i];
-			float gy = this.edgeDerivativeY[i];
-
-			float gxRot = cosTheta * gx - sinTheta * gy;
-			float gyRot = sinTheta * gx + cosTheta * gy;
-
-			rotatedModel.edgeDerivativeX[i] = gxRot;
-			rotatedModel.edgeDerivativeY[i] = gyRot;
-			rotatedModel.edgeMagnitude[i] = (float)Math.Sqrt(gxRot * gxRot + gyRot * gyRot);
-		}
-
-		// Koordináták forgatása párhuzamosan
-		Parallel.For(0, n, j =>
-		{
-			int x = this.cordinatesarrayX[j];
-			int y = this.cordinatesarrayY[j];
-
-			int xRot = (int)Math.Round(cosTheta * x - sinTheta * y);
-			int yRot = (int)Math.Round(sinTheta * x + cosTheta * y);
-
-			rotatedModel.cordinatesarrayX[j] = xRot;
-			rotatedModel.cordinatesarrayY[j] = yRot;
-			rotatedModel.cordinates[j] = new Point(xRot, yRot);
-		});
-
-		return rotatedModel;
-	}
-
-
-
-	public EdgeBasedModelInfo GetRotatedModel(double angleDegrees)
-		{
-			double angleRadiansright = -angleDegrees * Math.PI / 180.0;
+			double angleRadiansRight = -angleDegrees * Math.PI / 180.0;
 			double angleRadians = angleDegrees * Math.PI / 180.0;
-			double cosTheta = Math.Cos(angleRadians);
-			double sinTheta = Math.Sin(angleRadians);
-			double cosThetar = Math.Cos(angleRadiansright);
-			double sinThetar = Math.Sin(angleRadiansright);
+
+			float cosTheta = (float)Math.Cos(angleRadians);
+			float sinTheta = (float)Math.Sin(angleRadians);
+			float cosThetaR = (float)Math.Cos(angleRadiansRight);
+			float sinThetaR = (float)Math.Sin(angleRadiansRight);
+
+			int n = this.noOfCordinates;
 
 			EdgeBasedModelInfo rotatedModel = new EdgeBasedModelInfo
 			{
-				noOfCordinates = this.noOfCordinates,
+				noOfCordinates = n,
 				modelHeight = this.modelHeight,
 				modelWidth = this.modelWidth,
 				centerOfGravity = this.centerOfGravity,
@@ -129,241 +54,47 @@ public EdgeBasedModelInfo GetRotatedModel_SIMD(double angleDegrees)
 				EdgeHeight = this.EdgeHeight,
 				EdgeWith = this.EdgeWith,
 				rotation = (int)angleDegrees,
-				MaxGradient = this.MaxGradient
+				MaxGradient = this.MaxGradient,
+				edgeDerivativeX = new float[n],
+				edgeDerivativeY = new float[n],
+				edgeMagnitude = new float[n],
+				cordinatesarrayX = new int[n],
+				cordinatesarrayY = new int[n]
 			};
 
-			int n = this.noOfCordinates;
+			// A vektor hossza forgatáskor invariáns: Math.Sqrt helyett gyors memóriamásolás!
+			Array.Copy(this.edgeMagnitude, rotatedModel.edgeMagnitude, n);
 
-			rotatedModel.edgeDerivativeX = new float[n];
-			rotatedModel.edgeDerivativeY = new float[n];
-			rotatedModel.edgeMagnitude = new float[n];
-			rotatedModel.cordinatesarrayX = new int[n];
-			rotatedModel.cordinatesarrayY = new int[n];
-			rotatedModel.cordinates = new Point[n];
-			float MaxgradNorm = MaxGradient * 255;
+			float[] srcGx = this.edgeDerivativeX;
+			float[] srcGy = this.edgeDerivativeY;
+			float[] dstGx = rotatedModel.edgeDerivativeX;
+			float[] dstGy = rotatedModel.edgeDerivativeY;
 
-			//	Parallel.For(0, n, i =>
+			int[] srcX = this.cordinatesarrayX;
+			int[] srcY = this.cordinatesarrayY;
+			int[] dstX = rotatedModel.cordinatesarrayX;
+			int[] dstY = rotatedModel.cordinatesarrayY;
 
 			for (int i = 0; i < n; i++)
 			{
-				// Gradient forgatása
-				float gx = this.edgeDerivativeX[i];
-				float gy = this.edgeDerivativeY[i];
+				float gx = srcGx[i];
+				float gy = srcGy[i];
+				dstGx[i] = cosTheta * gx - sinTheta * gy;
+				dstGy[i] = sinTheta * gx + cosTheta * gy;
 
-				float gxRot = (float)(cosTheta * gx - sinTheta * gy);
-				float gyRot = (float)(sinTheta * gx + cosTheta * gy);
-
-				float mag = (float)Math.Sqrt(gxRot * gxRot + gyRot * gyRot);
-				float Divmag = (float)(mag / MaxgradNorm);
-
-				rotatedModel.edgeDerivativeX[i] = gxRot;
-				rotatedModel.edgeDerivativeY[i] = gyRot;
-				//rotatedModel.edgeMagnitude[i] = mag;
-				if (Divmag != 0)
-					rotatedModel.edgeMagnitude[i] = 1 / Divmag;
-				else
-					rotatedModel.edgeMagnitude[i] = 0;
-				// Koordináta forgatása (lokális koordináták, nem kell újra eltolni)
-				int x = this.cordinatesarrayX[i];
-				int y = this.cordinatesarrayY[i];
-
-				int xRot = (int)Math.Round(cosThetar * x - sinThetar * y);
-				int yRot = (int)Math.Round(sinThetar * x + cosThetar * y);
-
-				rotatedModel.cordinatesarrayX[i] = xRot;
-				rotatedModel.cordinatesarrayY[i] = yRot;
-				rotatedModel.cordinates[i] = new Point(xRot, yRot);
+				int x = srcX[i];
+				int y = srcY[i];
+				dstX[i] = (int)Math.Round(cosThetaR * x - sinThetaR * y);
+				dstY[i] = (int)Math.Round(sinThetaR * x + cosThetaR * y);
 			}
-	//	});
-			return rotatedModel;
-		}
-
-		/*
-		public EdgeBasedModelInfo GetRotatedModel(double angleDegrees)
-		{
-			double angleRadians = angleDegrees * Math.PI / 180.0;
-			double cosTheta = Math.Cos(angleRadians);
-			double sinTheta = Math.Sin(angleRadians);
-			int minx = int.MaxValue;
-			int miny = int.MaxValue;
-			int maxx = int.MinValue;
-			int maxy = int.MinValue;
-
-			EdgeBasedModelInfo rotatedModel = new EdgeBasedModelInfo
-			{
-				noOfCordinates = this.noOfCordinates,
-				modelHeight = this.modelHeight,
-				modelWidth = this.modelWidth,
-				centerOfGravity = this.centerOfGravity,
-				Center = this.Center,
-				EdgeHeight = this.EdgeHeight,
-				EdgeWith = this.EdgeWith,
-				rotation = (int)angleDegrees,
-				MaxGradient = this.MaxGradient
-			};
-
-			int n = this.noOfCordinates;
-
-			rotatedModel.edgeDerivativeX = new float[n];
-			rotatedModel.edgeDerivativeY = new float[n];
-			rotatedModel.edgeMagnitude = new float[n];
-			rotatedModel.cordinatesarrayX = new int[n];
-			rotatedModel.cordinatesarrayY = new int[n];
-			rotatedModel.cordinates = new Point[n];
-
-			for (int i = 0; i < n; i++)
-			{
-				// Gradient forgatása
-				float gx = this.edgeDerivativeX[i];
-				float gy = this.edgeDerivativeY[i];
-
-				float gxRot = (float)(cosTheta * gx - sinTheta * gy);
-				float gyRot = (float)(sinTheta * gx + cosTheta * gy);
-
-				float mag = (float)Math.Sqrt(gxRot * gxRot + gyRot * gyRot);
-				float dir = (float)Math.Atan2(gyRot, gxRot); // radiánban
-
-				rotatedModel.edgeDerivativeX[i] = gxRot;
-				rotatedModel.edgeDerivativeY[i] = gyRot;
-				rotatedModel.edgeMagnitude[i] = mag;
-
-				// Koordináta forgatása a súlypont körül (már lokális koordináták)
-				int x = this.cordinatesarrayX[i];
-				int y = this.cordinatesarrayY[i];
-
-				int xRot = (int)Math.Round(cosTheta * x - sinTheta * y) + this.centerOfGravity.X ;
-				int yRot = (int)Math.Round(sinTheta * x + cosTheta * y) + this.centerOfGravity.Y ;
-				if (xRot < minx)
-					minx = xRot;
-
-				if (xRot > maxx)
-					maxx = xRot;
-
-				if (yRot < miny)
-					miny = yRot;
-
-				if (yRot > maxy)
-					maxy = yRot;
-				rotatedModel.cordinatesarrayX[i] = xRot;
-				rotatedModel.cordinatesarrayY[i] = yRot;
-				rotatedModel.cordinates[i] = new Point(xRot, yRot);
-			}
-
-
 
 			return rotatedModel;
 		}
 
 
-		*/
-		/*
-		public EdgeBasedModelInfo GetRotatedModel(double angleDegrees)
-		{
-			double angleRadians = angleDegrees * Math.PI / 180.0;
-			double cosTheta = Math.Cos(angleRadians);
-			double sinTheta = Math.Sin(angleRadians);
-			int minx = int.MaxValue;
-			int miny = int.MaxValue;
-			int maxx = int.MinValue;
-			int maxy = int.MinValue;
-
-
-			EdgeBasedModelInfo rotatedModel = new EdgeBasedModelInfo
-			{
-				noOfCordinates = this.noOfCordinates,
-				modelHeight = this.modelHeight,
-				modelWidth = this.modelWidth,
-				centerOfGravity = new Point(this.centerOfGravity.X, this.centerOfGravity.Y),
-				Center = new Point (this.Center.X, this.Center.Y),
-				EdgeHeight = this.EdgeHeight,
-				EdgeWith = this.EdgeWith,
-				rotation = (int)angleDegrees,
-				MaxGradient = this.MaxGradient
-			};
-
-			int n = this.noOfCordinates;
-
-			rotatedModel.edgeDerivativeX = new float[n];
-			rotatedModel.edgeDerivativeY = new float[n];
-			rotatedModel.edgeMagnitude = new float[n];
-			rotatedModel.cordinatesarrayX = new int[n];
-			rotatedModel.cordinatesarrayY = new int[n];
-			rotatedModel.cordinates = new Point[n];
-
-			Point center = this.centerOfGravity;
-
-			for (int i = 0; i < n; i++)
-			{
-				// Gradient forgatása
-				float gx = this.edgeDerivativeX[i];
-				float gy = this.edgeDerivativeY[i];
-
-				float gxRot = (float)(cosTheta * gx - sinTheta * gy);
-				float gyRot = (float)(sinTheta * gx + cosTheta * gy);
-
-				float mag = (float)Math.Sqrt(gxRot * gxRot + gyRot * gyRot);
-				float dir = (float)Math.Atan2(gyRot, gxRot); // radiánban
-				float Divmag = (float)(mag / MaxGradient * 255);
-				rotatedModel.edgeDerivativeX[i] = gxRot;
-				rotatedModel.edgeDerivativeY[i] = gyRot;
-				if (Divmag != 0)
-					rotatedModel.edgeMagnitude[i] = 1 / Divmag;
-				else
-					rotatedModel.edgeMagnitude[i] = 0;
-
-				// Koordináta forgatása a súlypont körül
-				int x = this.cordinatesarrayX[i] ;
-				int y = this.cordinatesarrayY[i] ;
-	//			int x = this.cordinatesarrayX[i] - center.X;
-	//			int y = this.cordinatesarrayY[i] - center.Y;
-		//		int x = this.cordinatesarrayX[i] - (maxx - minx) / 2;
-		//		int y = this.cordinatesarrayY[i] - (maxy - miny) / 2;
-
-
-				int xRot = (int)Math.Round(cosTheta * x - sinTheta * y) + center.X;
-				int yRot = (int)Math.Round(sinTheta * x + cosTheta * y) + center.Y;
-
-				if (xRot < minx)
-					minx = xRot;
-
-				if (xRot > maxx)
-					maxx = xRot;
-
-				if (yRot < miny)
-					miny = yRot;
-
-				if (yRot > maxy)
-					maxy = yRot;
-
-				rotatedModel.cordinatesarrayX[i] = xRot;
-				rotatedModel.cordinatesarrayY[i] = yRot;
-				rotatedModel.cordinates[i] = new Point(xRot, yRot);
-			}
 
 
 
-			rotatedModel.centerOfGravity.X = minx + (maxx - minx) / 2; // center
-			rotatedModel.centerOfGravity.Y = miny + (maxy - miny) / 2; // center y
-			rotatedModel.Center = new Point(minx + (maxx - minx) / 2, miny + (maxy - miny) / 2);
-			rotatedModel.EdgeHeight = maxx - minx;
-			rotatedModel.EdgeWith = maxy - miny;
-			rotatedModel.modelWidth = maxx - minx;
-			rotatedModel.modelHeight = maxy - miny;
-
-			for (int m = 0; m < rotatedModel.noOfCordinates; m++)
-			{
-				int temp;
-				temp = rotatedModel.cordinates[m].X;
-				rotatedModel.cordinates[m].X = temp - (maxx - minx) / 2;
-				temp = rotatedModel.cordinates[m].Y;
-				rotatedModel.cordinates[m].Y = temp - (maxy - miny) / 2;
-			}
-
-
-
-			return rotatedModel;
-		}
-		*/
 
 	}
 
@@ -393,7 +124,7 @@ public EdgeBasedModelInfo GetRotatedModel_SIMD(double angleDegrees)
 		public float DerivateX;
 		public float DerivateY;
 		public float OriginalValue;
-    }
+	}
 
 	public struct EdgePointWithNeighbor
 	{

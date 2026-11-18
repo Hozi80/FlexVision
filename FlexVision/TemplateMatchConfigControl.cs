@@ -47,120 +47,125 @@ namespace FlexVision
 
         private void InitializeComponent()
         {
-            // 1. SZAKASZ: SABLON INTERAKTÍV LAPOZÓ (MINI PICTUREBOX)
+            // Görgetősáv engedélyezése a megnövelt magasság miatt
+            this.AutoScroll = true;
+
+            // 1. SZAKASZ: SABLON INTERAKTÍV LAPOZÓ ÉS NAGY NÉGYZETES ELŐNÉZET
             Label lblSection1 = new Label { Text = "SABLONOK MENEDZSERE (MULTI-TEMPLATE)", ForeColor = Color_Cyan, Font = new Font("Segoe UI", 8, FontStyle.Bold), Location = new Point(10, 5), AutoSize = true };
 
-            picTemplatePreview = new PictureBox { Location = new Point(10, 25), Size = new Size(120, 100), BackColor = Color.FromArgb(15, 15, 15), SizeMode = PictureBoxSizeMode.Zoom, BorderStyle = BorderStyle.FixedSingle };
+            // 320x320 pixeles négyzet alakú előnézeti ablak a sablonnak
+            picTemplatePreview = new PictureBox { Location = new Point(10, 25), Size = new Size(320, 320), BackColor = Color.FromArgb(15, 15, 15), SizeMode = PictureBoxSizeMode.Zoom, BorderStyle = BorderStyle.FixedSingle };
 
-            btnPrev = CreateControlBtn("◀", 140, 25, 35, 30);
-            lblTemplateCounter = new Label { Text = "0 / 0", ForeColor = Color_Text, Font = new Font("Segoe UI", 9, FontStyle.Bold), Location = new Point(180, 32), AutoSize = true };
-            btnNext = CreateControlBtn("▶", 230, 25, 35, 30);
+            // Alatta a lapozó gombok szimmetrikusan elosztva (Y: 352)
+            btnPrev = CreateControlBtn("◀", 10, 352, 100, 28);
+            lblTemplateCounter = new Label { Text = "0 / 0", ForeColor = Color_Text, Font = new Font("Segoe UI", 9, FontStyle.Bold), Location = new Point(115, 352), Size = new Size(110, 28), TextAlign = ContentAlignment.MiddleCenter };
+            btnNext = CreateControlBtn("▶", 230, 352, 100, 28);
 
-            btnDeleteTemplate = CreateControlBtn("❌ DELETE", 140, 65, 125, 30, Color.FromArgb(255, 120, 10));
+            // Alatta a törlés gomb teljes szélességben (Y: 386)
+            btnDeleteTemplate = CreateControlBtn("❌ DELETE TEMPLATE", 10, 386, 320, 28, Color.FromArgb(255, 120, 10));
 
             btnPrev.Click += (s, e) => { if (_module.Templates.Count > 0) { _module.ActiveTemplateIndex = (_module.ActiveTemplateIndex - 1 + _module.Templates.Count) % _module.Templates.Count; UpdateTemplateUI(); } };
             btnNext.Click += (s, e) => { if (_module.Templates.Count > 0) { _module.ActiveTemplateIndex = (_module.ActiveTemplateIndex + 1) % _module.Templates.Count; UpdateTemplateUI(); } };
             btnDeleteTemplate.Click += BtnDeleteTemplate_Click;
 
             // 2. SZAKASZ: AKCIÓ GOMBOK (SELECT, ROI, TEST)
-            btnSelectTemplate = CreateControlBtn("🎯 SELECT NEW TEMPLATE", 10, 135, 160, 32, Color_Cyan);
-
-            // JAVÍTÁS: Amikor a mérnök megnyomja a gombot, a jobb hasáb utasítja a szülő ImageBoxEx-et az egér-kijelölés indítására!
+            // Select New Template teljes szélességben (Y: 424)
+            btnSelectTemplate = CreateControlBtn("🎯 SELECT NEW TEMPLATE", 10, 424, 320, 32, Color_Cyan);
             btnSelectTemplate.Click += (s, e) => {
                 if (_mainEditor != null)
                 {
-                    // 1. Megkeressük az Editoron belüli ImageBoxEx vezérlőt egy belső segédfüggvénnyel,
-                    // vagy ha az imageBoxExMain publikus/internal az Editorban, közvetlenül elérjük:
                     var imageBox = _mainEditor.Controls.Find("imageBoxExMain", true);
                     if (imageBox.Length > 0 && imageBox[0] is ImageBoxEx cyotekBox)
                     {
-                        // 2. KÉNYSZERÍTJÜK A CYOTEK MOTOR BELSŐ INTERAKCIÓIT:
-                        cyotekBox.SelectionMode =  Cyotek.Windows.Forms.ImageBoxSelectionMode.Rectangle; // Átváltunk négyszögre
-                        cyotekBox.AutoPan = false; // Kikapcsoljuk az egérrel való vonszolást (Pan), hogy NE mozogjon a kép rajzolás közben!
-                        cyotekBox.Cursor = Cursors.Cross; // Célkereszt kurzor
-
-                        // Aktiváljuk a szülő editor belső flag-jét is
+                        cyotekBox.SelectionMode = Cyotek.Windows.Forms.ImageBoxSelectionMode.Rectangle;
+                        cyotekBox.AutoPan = false;
+                        cyotekBox.Cursor = Cursors.Cross;
                         _mainEditor.StartTemplateSelection();
                     }
                 }
             };
 
-            btnSelectRoi = CreateControlBtn("🗺️ ROI SELECT", 180, 135, 150, 32);
-            btnTest = CreateControlBtn("▶ TEST MATCH", 10, 175, 320, 35, Color.LightGreen);
+            // ROI Select és ROI Reset egymás mellett (Y: 462)
+            btnSelectRoi = CreateControlBtn("🗺️ ROI SELECT", 10, 462, 157, 30);
+            btnSelectRoi.Click += (s, e) => {
+                if (_mainEditor != null) _mainEditor.StartRoiSelection();
+            };
+
+            Button btnResetRoi = CreateControlBtn("✖ RESET ROI", 173, 462, 157, 30, Color.Tomato);
+            btnResetRoi.Click += (s, e) => {
+                _module.UseROI = false;
+                _module.ROI = Rectangle.Empty;
+                _mainEditor?.RunPipelineDebug();
+                _onDataChanged?.Invoke();
+            };
+
+            // Test Match teljes szélességben (Y: 500)
+            btnTest = CreateControlBtn("▶ TEST MATCH", 10, 500, 320, 35, Color.LightGreen);
+            btnTest.Click += BtnTest_Click;
             btnTest.ForeColor = Color.Black;
 
-            Label lblExpected = new Label { Text = "Obj. Count:", ForeColor = Color_Text, Location = new Point(170, 280), AutoSize = true, Font = new Font("Segoe UI", 8, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft };
+            // 3. SZAKASZ: MATCH PARAMETERS (Y: 550-től)
+            Label lblSection2 = new Label { Text = "MATCH PARAMETERS", ForeColor = Color_Cyan, Font = new Font("Segoe UI", 8, FontStyle.Bold), Location = new Point(10, 550), AutoSize = true };
 
+            Label lblScore = new Label { Text = "Min Score:", ForeColor = Color_Text, Location = new Point(10, 575), AutoSize = true };
+            numScore = new NumericUpDown { Location = new Point(90, 573), Width = 65, Minimum = 0, Maximum = 1, DecimalPlaces = 2, Increment = 0.05M, Value = (decimal)_module.MatchParams.Score, BackColor = Color_Light, ForeColor = Color_Text };
+            numScore.ValueChanged += (s, e) => { _module.MatchParams.Score = (double)numScore.Value; };
+
+            Label lblAngle = new Label { Text = "Tolerance ∠:", ForeColor = Color_Text, Location = new Point(170, 575), AutoSize = true };
+            numAngle = new NumericUpDown { Location = new Point(255, 573), Width = 65, Minimum = 0, Maximum = 360, Value = (decimal)_module.MatchParams.ToleranceAngle, BackColor = Color_Light, ForeColor = Color_Text };
+            numAngle.ValueChanged += (s, e) => { _module.MatchParams.ToleranceAngle = (double)numAngle.Value; };
+
+            checkPolarity = new CheckBox { Text = "Use Polarity Check", ForeColor = Color_Text, Location = new Point(10, 605), AutoSize = true, Checked = _module.MatchParams.PolarityCheck };
+            checkPolarity.CheckedChanged += (s, e) => { _module.MatchParams.PolarityCheck = checkPolarity.Checked; };
+
+            Label lblExpected = new Label { Text = "Obj. Count:", ForeColor = Color_Text, Location = new Point(170, 605), AutoSize = true, Font = new Font("Segoe UI", 8, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft };
             numExpectedCount = new NumericUpDown
             {
-                Location = new Point(255, 280),
+                Location = new Point(255, 603),
                 Width = 65,
                 Minimum = 1,
                 Maximum = 100,
-                Value = _module.ExpectedObjectCount, // Beolvassuk a modul pillanatnyi MaxPos értékét
+                Value = _module.ExpectedObjectCount,
                 BackColor = Color_Light,
                 ForeColor = Color_Cyan,
                 BorderStyle = BorderStyle.None,
                 Font = new Font("Segoe UI", 9, FontStyle.Bold),
                 TextAlign = HorizontalAlignment.Center
             };
-
             numExpectedCount.ValueChanged += (s, e) => {
                 _module.ExpectedObjectCount = (int)numExpectedCount.Value;
-
-                // Meghívjuk a publikussá tett gráf-frissítő metódust
-                if (_mainEditor != null)
-                {
-                    _mainEditor.RunPipelineDebug();
-                }
+                _mainEditor?.RunPipelineDebug();
             };
 
+            // 4. SZAKASZ: DIAGNOSZTIKA ÉS LED KIJELZŐ (Y: 640)
+            lblExecutionTime = new Label { Text = "TIME: 0 ms", ForeColor = Color_Text, Font = new Font("Segoe UI", 10, FontStyle.Bold), Location = new Point(10, 640), AutoSize = true };
 
-
-            // 3. SZAKASZ: MATCH PARAMETERS (Értékek állítása)
-            Label lblSection2 = new Label { Text = "MATCH PARAMETERS", ForeColor = Color_Cyan, Font = new Font("Segoe UI", 8, FontStyle.Bold), Location = new Point(10, 225), AutoSize = true };
-
-            Label lblScore = new Label { Text = "Min Score:", ForeColor = Color_Text, Location = new Point(10, 250), AutoSize = true };
-            numScore = new NumericUpDown { Location = new Point(90, 248), Width = 65, Minimum = 0, Maximum = 1, DecimalPlaces = 2, Increment = 0.05M, Value = (decimal)_module.MatchParams.Score, BackColor = Color_Light, ForeColor = Color_Text };
-            numScore.ValueChanged += (s, e) => { _module.MatchParams.Score = (double)numScore.Value; };
-
-            Label lblAngle = new Label { Text = "Tolerance ∠:", ForeColor = Color_Text, Location = new Point(170, 250), AutoSize = true };
-            numAngle = new NumericUpDown { Location = new Point(255, 248), Width = 65, Minimum = 0, Maximum = 360, Value = (decimal)_module.MatchParams.ToleranceAngle, BackColor = Color_Light, ForeColor = Color_Text };
-            numAngle.ValueChanged += (s, e) => { _module.MatchParams.ToleranceAngle = (double)numAngle.Value; };
-
-            checkPolarity = new CheckBox { Text = "Use Polarity Check", ForeColor = Color_Text, Location = new Point(10, 280), AutoSize = true, Checked = _module.MatchParams.PolarityCheck };
-            checkPolarity.CheckedChanged += (s, e) => { _module.MatchParams.PolarityCheck = checkPolarity.Checked; };
-
-            // 4. SZAKASZ: DIAGNOSZTIKA ÉS LED KIJELZŐ
-            lblExecutionTime = new Label { Text = "TIME: 0 ms", ForeColor = Color_Text, Font = new Font("Segoe UI", 10, FontStyle.Bold), Location = new Point(10, 315), AutoSize = true };
-
-            // LED visszajelző szoftveres szimulációja (zöld/piros színváltós panel)
-            panelLedIndicator = new Panel { Location = new Point(250, 312), Size = new Size(70, 24), BackColor = Color.DarkGray, BorderStyle = BorderStyle.FixedSingle };
+            panelLedIndicator = new Panel { Location = new Point(250, 637), Size = new Size(70, 24), BackColor = Color.DarkGray, BorderStyle = BorderStyle.FixedSingle };
             Label lblLedText = new Label { Text = "WAIT", ForeColor = Color.Black, Font = new Font("Segoe UI", 8, FontStyle.Bold), Location = new Point(15, 4), AutoSize = true };
             panelLedIndicator.Controls.Add(lblLedText);
 
-            // 5. SZAKASZ: LISTVIEW AZ EREDMÉNYEKNEK
-            Label lblSection3 = new Label { Text = "TARGET MATCH RESULTS", ForeColor = Color_Cyan, Font = new Font("Segoe UI", 8, FontStyle.Bold), Location = new Point(10, 350), AutoSize = true };
+            // 5. SZAKASZ: LISTVIEW AZ EREDMÉNYEKNEK (Y: 675)
+            Label lblSection3 = new Label { Text = "TARGET MATCH RESULTS", ForeColor = Color_Cyan, Font = new Font("Segoe UI", 8, FontStyle.Bold), Location = new Point(10, 675), AutoSize = true };
 
-            listViewResults = new ListView { Location = new Point(10, 370), Size = new Size(320, 160), BackColor = Color_Slate, ForeColor = Color_Text, BorderStyle = BorderStyle.None, View = View.Details, FullRowSelect = true, GridLines = true };
+            listViewResults = new ListView { Location = new Point(10, 695), Size = new Size(320, 150), BackColor = Color_Slate, ForeColor = Color_Text, BorderStyle = BorderStyle.None, View = View.Details, FullRowSelect = true, GridLines = true };
             listViewResults.Columns.Add("Index", 45);
             listViewResults.Columns.Add("Score", 65);
             listViewResults.Columns.Add("X", 55);
             listViewResults.Columns.Add("Y", 55);
             listViewResults.Columns.Add("Angle", 65);
 
-            this.Controls.Add(lblSection1); this.Controls.Add(picTemplatePreview); this.Controls.Add(lblTemplateCounter);
-            this.Controls.Add(btnPrev); this.Controls.Add(btnNext); this.Controls.Add(btnDeleteTemplate);
-            this.Controls.Add(btnSelectTemplate); this.Controls.Add(btnSelectRoi); this.Controls.Add(btnTest);
-            this.Controls.Add(lblSection2); this.Controls.Add(lblScore); this.Controls.Add(numScore);
-            this.Controls.Add(lblAngle); this.Controls.Add(numAngle); this.Controls.Add(checkPolarity);
-            this.Controls.Add(lblExecutionTime); this.Controls.Add(panelLedIndicator);
-            this.Controls.Add(lblSection3); this.Controls.Add(listViewResults);
-            this.Controls.Add(lblExpected);
-            this.Controls.Add(numExpectedCount);
-            // Bekötjük a teszt és kijelölő eseményeket
-            btnTest.Click += BtnTest_Click;
+            // Alsó margó biztosítása görgetéshez
+            Label lblBottomSpacer = new Label { Location = new Point(10, 855), Size = new Size(10, 15) };
+
+            this.Controls.AddRange(new Control[] {
+        lblSection1, picTemplatePreview, btnPrev, lblTemplateCounter, btnNext, btnDeleteTemplate,
+        btnSelectTemplate, btnSelectRoi, btnResetRoi, btnTest,
+        lblSection2, lblScore, numScore, lblAngle, numAngle, checkPolarity, lblExpected, numExpectedCount,
+        lblExecutionTime, panelLedIndicator, lblSection3, listViewResults, lblBottomSpacer
+    });
         }
+
+
 
         /*
         private Button CreateControlBtn(string text, int x, int y, int w, int h, Color? customColor = null)

@@ -6,6 +6,7 @@ using Emgu.CV;
 using Emgu.CV.Structure;
 using Cyotek.Windows.Forms.Demo;
 using Cyotek.Windows.Forms;
+using AOI.Inspections.EdgeBasedTemplateDetection;
 
 namespace FlexVision
 {
@@ -49,7 +50,7 @@ namespace FlexVision
         private bool _isSelectingRoi = false;
         private bool _isColorPicking = false;
         private InspectionContext _lastInspectionCache = null;
-
+        public string CurrentRecipePath { get; set; } = string.Empty;
         public List<IInspectionModule> PipelineSteps { get; private set; } = new List<IInspectionModule>();
 
         public PipelineEditorControl()
@@ -83,7 +84,13 @@ namespace FlexVision
             // BAL OLDALI SALV GOMBOK
             panelToolbar = new Panel { Dock = DockStyle.Top, Height = 50, BackColor = Color_Slate };
             btnNew = new Button { Text = "📄 NEW", Location = new Point(6, 10), Width = 83, Height = 30, FlatStyle = FlatStyle.Flat, ForeColor = Color_Cyan, BackColor = Color_Light, Font = new Font("Segoe UI", 7.5f, FontStyle.Bold), Cursor = Cursors.Hand };
-            btnNew.Click += (s, e) => { CreateDefaultPipeline(); RefreshUI(); };
+            btnNew.Click += (s, e) =>
+            {
+                CurrentRecipePath = string.Empty; // Töröljük az útvonalat, hogy a következő mentés új fájlt kérjen
+                CreateDefaultPipeline();
+                RefreshUI();
+            };
+
             btnSave = new Button { Text = "💾 SAVE", Location = new Point(93, 10), Width = 83, Height = 30, FlatStyle = FlatStyle.Flat, ForeColor = Color_Text, BackColor = Color_Light, Font = new Font("Segoe UI", 7.5f, FontStyle.Bold), Cursor = Cursors.Hand };
             btnSave.Click += OnSaveClick;
             btnRunAll = new Button { Text = "▶ RUN", Location = new Point(180, 10), Width = 84, Height = 30, FlatStyle = FlatStyle.Flat, ForeColor = Color.LightGreen, BackColor = Color_Light, Font = new Font("Segoe UI", 7.5f, FontStyle.Bold), Cursor = Cursors.Hand };
@@ -130,12 +137,42 @@ namespace FlexVision
             imageBoxExMain.GridColor = Color.FromArgb(55, 55, 55); imageBoxExMain.GridColorAlternate = Color.FromArgb(45, 45, 45);
             imageBoxExMain.Selected += ImageBoxExMain_SelectionChanged;
             imageBoxExMain.MouseClick += ImageBoxExMain_MouseClick;
+            imageBoxExMain.Paint += ImageBoxExMain_Paint;
             imageBoxExMain.MouseMove += (s, e) => {
                 // Ha éppen színt választ a mérnök, felülbíráljuk a Cyotek belső SetCursor metódusát,
                 // és rákényszerítjük a precíz célkeresztet az ablakra, amíg a kattintás meg nem történik!
                 if (_isColorPicking)
                 {
                     imageBoxExMain.Cursor = Cursors.Cross;
+                }
+
+                foreach (Control ctrl in panelSpecificContainer.Controls)
+                    if (ctrl is IInteractiveGeometryTool geomTool && imageBoxExMain.Image != null)
+                        geomTool.HandleMouseMove(imageBoxExMain.PointToImage(e.Location));
+
+            };
+
+
+            imageBoxExMain.MouseDown += (s, e) => {
+                if (e.Button != MouseButtons.Left || imageBoxExMain.Image == null) return;
+                foreach (Control ctrl in panelSpecificContainer.Controls)
+                {
+                    if (ctrl is IInteractiveGeometryTool geomTool)
+                    {
+                        imageBoxExMain.AutoPan = false; // Megakadályozza, hogy a kép elcsússzon felirat-húzás közben
+                        geomTool.HandleMouseDown(imageBoxExMain.PointToImage(e.Location));
+                    }
+                }
+            };
+
+            imageBoxExMain.MouseUp += (s, e) => {
+                foreach (Control ctrl in panelSpecificContainer.Controls)
+                {
+                    if (ctrl is IInteractiveGeometryTool geomTool && imageBoxExMain.Image != null)
+                    {
+                        geomTool.HandleMouseUp(imageBoxExMain.PointToImage(e.Location));
+                        imageBoxExMain.AutoPan = true;
+                    }
                 }
             };
 
@@ -196,6 +233,16 @@ namespace FlexVision
         // --- DINAMIKUS MEGJELENÍTÉS ÉS COMBOBOX TÖLTÉS A LISTAVÁLTÁSKOR ---
         private void ListBoxPipeline_SelectedIndexChanged(object sender, EventArgs e)
         {
+
+            // Ha a mérnök éppen sablont vagy ROI-t tanít be, az indexváltás hatására 
+            // futó képfrissítést azonnal leállítjuk, így a maszkolt kiskép a kijelzőn marad!
+            if (_isSelectingTemplate || _isSelectingRoi)
+            {
+                return;
+            }
+
+  
+
             int idx = listBoxPipeline.SelectedIndex;
             if (idx < 0) return;
             BaseInspectionModule selectedModule = PipelineSteps[idx] as BaseInspectionModule;
@@ -222,6 +269,19 @@ namespace FlexVision
                 colorUi.Dock = DockStyle.Fill;
                 panelSpecificContainer.Controls.Add(colorUi);
             }
+            else if (selectedModule is BlobAnalysisModule blobMod)
+            {
+                var blobCtrl = new BlobAnalysisConfigControl(blobMod, this, () => RunPipelineDebug());
+                panelSpecificContainer.Controls.Add(blobCtrl);
+            }
+            else if (selectedModule is EdgeCaliperModule caliperMod)
+            {
+                panelSpecificContainer.Controls.Add(new EdgeCaliperConfigControl(caliperMod, this, () => RunPipelineDebug()));
+            }
+            else if (selectedModule is GeometryMeasureModule geomMod)
+            {
+                panelSpecificContainer.Controls.Add(new GeometryMeasureConfigControl(geomMod, imageBoxExMain, () => RunPipelineDebug()));
+            }
             else
             {
                 Panel pSpecHeader = new Panel { Dock = DockStyle.Top, Height = 25, BackColor = Color_Light };
@@ -233,6 +293,7 @@ namespace FlexVision
             panelSpecificContainer.ResumeLayout(true); panelSpecificContainer.Refresh();
             _activeSubLoopIndex = 0; // Visszaállítjuk a lapozót az első elemre
             RunPipelineDebug();
+            imageBoxExMain.ZoomToFit();
         }
         private void FillCommonComboBoxes(int currentIdx, BaseInspectionModule mod)
         {
@@ -301,103 +362,40 @@ namespace FlexVision
             // Ezt a háttérben futó kontextus subContext listájából frissítjük az újra-kirajzoláskor
             RunPipelineDebug(direction);
         }
-        // ====================================================================
-        // --- JAVÍTÁS: ADAPTÍV RUN MODELL TELJES CIKLUSIDŐ MÉRÉSSEL ---
-        // ====================================================================
+
+
+
+
         public void RunPipelineDebug(int stepDirection = 0, bool runAll = false)
         {
-            // Ha runAll=true, akkor a teljes listát futtatjuk, egyébként csak a kijelölt elemig
             int idx = runAll ? PipelineSteps.Count - 1 : listBoxPipeline.SelectedIndex;
             if (idx < 0) return;
 
             using (InspectionContext mainContext = new InspectionContext())
             {
-                bool inSubPipelineLoop = false;
+                ExecutePipelineRecursive(mainContext, 0, idx);
 
-                // Végigfuttatjuk a láncot a meghatározott végpontig
-                for (int i = 0; i <= idx; i++)
-                {
-                    IInspectionModule step = PipelineSteps[i];
-                    var sw = System.Diagnostics.Stopwatch.StartNew();
-
-                    if (step is SubPipelineEndModule)
-                    {
-                        inSubPipelineLoop = false;
-                        step.Process(mainContext);
-                        sw.Stop();
-                        if (step is BaseInspectionModule bEnd)
-                        {
-                            bEnd.ProcessingTimeMs = sw.Elapsed.TotalMilliseconds;
-                            bEnd.Status = ModuleStatus.Success;
-                        }
-                        continue;
-                    }
-
-                    if (inSubPipelineLoop && mainContext.SubContexts != null && mainContext.SubContexts.Count > 0)
-                    {
-                        foreach (var subContext in mainContext.SubContexts)
-                        {
-                            foreach (var feat in mainContext.Features) subContext.Features[feat.Key] = feat.Value;
-                            step.Process(subContext);
-                        }
-                    }
-                    else
-                    {
-                        step.Process(mainContext);
-                    }
-
-                    sw.Stop();
-
-                    if (step is BaseInspectionModule baseMod && !(step is TemplateMatchModule))
-                    {
-                        baseMod.ProcessingTimeMs = sw.Elapsed.TotalMilliseconds;
-                        baseMod.Status = ModuleStatus.Success;
-                    }
-
-                    if (step is TemplateMatchModule || step is SubRoiGeneratorModule || step is EdgeBasedMatchModule)
-                    {
-                        inSubPipelineLoop = true;
-                    }
-
-                    // Történelemmentés .Copy() alapon
-                    if (mainContext.SubContexts != null && mainContext.SubContexts.Count > 0)
-                    {
-                        int activeIndex = Math.Min(_activeSubLoopIndex, mainContext.SubContexts.Count - 1);
-                        var activeSub = mainContext.SubContexts[activeIndex];
-                        if (activeSub.SourceImage != null && activeSub.SourceImage.Ptr != IntPtr.Zero)
-                            mainContext.ColorHistory[step.Name] = activeSub.SourceImage.Copy();
-                        if (activeSub.WorkingMask != null && activeSub.WorkingMask.Ptr != IntPtr.Zero)
-                            mainContext.GrayHistory[step.Name] = activeSub.WorkingMask.Copy();
-                    }
-                    else
-                    {
-                        if (mainContext.SourceImage != null && mainContext.SourceImage.Ptr != IntPtr.Zero)
-                            mainContext.ColorHistory[step.Name] = mainContext.SourceImage.Copy();
-                        if (mainContext.WorkingMask != null && mainContext.WorkingMask.Ptr != IntPtr.Zero)
-                            mainContext.GrayHistory[step.Name] = mainContext.WorkingMask.Copy();
-                    }
-                }
-
-                // --- CIKLUSIDŐ ÖSSZEGZÉS ÉS KIÍRÁS A FELIRATRA ---
+                // ====================================================================
+                // --- 1. SZAKASZ: CIKLUSIDŐ ÖSSZEGZÉS ÉS DIAGNOSZTIKAI JELENTÉS ---
+                // ====================================================================
                 double totalCycleTimeMs = 0;
-                // Csak az aktuálisan lefutott lépések idejét adjuk össze a tiszta diagnosztikához
                 for (int i = 0; i <= idx; i++)
                 {
                     totalCycleTimeMs += PipelineSteps[i].ProcessingTimeMs;
                 }
 
-                // Megkeressük a "Pipeline Steps" feliratot hordozó Label-t (pl. lblPipelineTitle)
-                // Ha nálad más a neve, írd át arra, ami az InitializeComponent-ben szerepel!
                 if (lblPipelineTitle != null)
                 {
                     lblPipelineTitle.Text = $"PIPELINE STEPS  ->  Total Time: {totalCycleTimeMs:F1} ms";
-
-                    // Ha a ciklusidő kritikus (pl. több mint 150 ms), sárgával jelezzük az ergonomikus UI érdekében
                     lblPipelineTitle.ForeColor = totalCycleTimeMs > 1000 ? Color.Orange : Color_Cyan;
                 }
 
-                // --- AL-PIPELINE VEZÉRLŐ PANEL LAPOZÁSA ---
-                if (mainContext.SubContexts != null && mainContext.SubContexts.Count > 1)
+                bool isInsideSubLoop = IsStepInsideSubPipeline(idx);
+
+                // ====================================================================
+                // --- 2. SZAKASZ: AL-PIPELINE VEZÉRLŐ PANEL LAPOZÁSA ---
+                // ====================================================================
+                if (isInsideSubLoop && mainContext.SubContexts != null && mainContext.SubContexts.Count > 1)
                 {
                     panelSubLoopNavigator.Visible = true;
                     _activeSubLoopIndex = (_activeSubLoopIndex + stepDirection + mainContext.SubContexts.Count) % mainContext.SubContexts.Count;
@@ -409,45 +407,67 @@ namespace FlexVision
                     _activeSubLoopIndex = 0;
                 }
 
-                // --- LIVE VIEW KIJELZÉS ---
+                // ====================================================================
+                // --- 3. SZAKASZ: GOLYÓÁLLÓ REKURZÍV LIVE VIEW KIJELZÉS ---
+                // ====================================================================
                 IInspectionModule currentModule = PipelineSteps[idx];
                 Bitmap oldBmp = imageBoxExMain.Image as Bitmap;
                 imageBoxExMain.Image = null;
 
                 if (_isSelectingTemplate || _isSelectingRoi)
                 {
-                    string firstStepName = PipelineSteps[0].Name;
-                    if (mainContext.ColorHistory.Count > 0 && mainContext.ColorHistory.ContainsKey(firstStepName))
+                    if (isInsideSubLoop && mainContext.SubContexts != null && mainContext.SubContexts.Count > 0)
                     {
-                        var firstImg = mainContext.ColorHistory[firstStepName];
-                        if (firstImg != null && firstImg.Ptr != IntPtr.Zero)
+                        int targetIdx = Math.Min(_activeSubLoopIndex, mainContext.SubContexts.Count - 1);
+                        var targetSub = mainContext.SubContexts[targetIdx];
+                        if (targetSub.SourceImage != null && targetSub.SourceImage.Ptr != IntPtr.Zero)
+                            imageBoxExMain.Image = targetSub.SourceImage.ToBitmap();
+                    }
+                    else
+                    {
+                        string firstStepName = PipelineSteps[0].Name;
+                        if (mainContext.ColorHistory.Count > 0 && mainContext.ColorHistory.ContainsKey(firstStepName))
                         {
-                            using (Image<Bgr, byte> img = firstImg.Copy()) imageBoxExMain.Image = img.ToBitmap();
+                            var firstImg = mainContext.ColorHistory[firstStepName];
+                            if (firstImg != null && firstImg.Ptr != IntPtr.Zero)
+                            {
+                                using (Image<Bgr, byte> img = firstImg.Copy()) imageBoxExMain.Image = img.ToBitmap();
+                            }
+                        }
+                        else if (mainContext.SourceImage != null && mainContext.SourceImage.Ptr != IntPtr.Zero)
+                        {
+                            imageBoxExMain.Image = mainContext.SourceImage.ToBitmap();
                         }
                     }
-                    else if (mainContext.SourceImage != null && mainContext.SourceImage.Ptr != IntPtr.Zero)
-                    {
-                        imageBoxExMain.Image = mainContext.SourceImage.ToBitmap();
-                    }
                 }
-                else if (currentModule is TemplateMatchModule || currentModule is EdgeBasedMatchModule)
-                {
-                    if (mainContext.SourceImage != null && mainContext.SourceImage.Ptr != IntPtr.Zero)
-                        imageBoxExMain.Image = mainContext.SourceImage.ToBitmap();
-                }
-                else if (mainContext.SubContexts != null && mainContext.SubContexts.Count > 0)
+
+                // 1. CSAK AKKOR MUTATJUK A KISKÉPET, HA TÉNYLEGESEN A HUROK BELSEJÉBEN VAGYUNK!
+                else if (isInsideSubLoop && mainContext.SubContexts != null && mainContext.SubContexts.Count > 0)
                 {
                     int targetIdx = Math.Min(_activeSubLoopIndex, mainContext.SubContexts.Count - 1);
                     var targetSub = mainContext.SubContexts[targetIdx];
 
-                    if (currentModule is ColorInRangeModule && targetSub.SourceImage != null && targetSub.SourceImage.Ptr != IntPtr.Zero)
-                        imageBoxExMain.Image = targetSub.SourceImage.ToBitmap();
+                    if (currentModule is EdgeBasedMatchModule || currentModule is BlobAnalysisModule || currentModule is ColorInRangeModule || currentModule is EdgeCaliperModule || currentModule is GeometryMeasureModule)
+                    {
+                        if (targetSub.SourceImage != null && targetSub.SourceImage.Ptr != IntPtr.Zero)
+                            imageBoxExMain.Image = targetSub.SourceImage.ToBitmap();
+                        else if (targetSub.WorkingMask != null && targetSub.WorkingMask.Ptr != IntPtr.Zero)
+                            imageBoxExMain.Image = targetSub.WorkingMask.ToBitmap();
+                    }
                     else if (targetSub.WorkingMask != null && targetSub.WorkingMask.Ptr != IntPtr.Zero)
+                    {
                         imageBoxExMain.Image = targetSub.WorkingMask.ToBitmap();
+                    }
+                }
+                // 2. HA KÍVÜL VAGYUNK A HURKON (PL. 10. GEOMETRY & OVERLAY), A TELJES NAGY KÉPET MUTATJUK!
+                else if (currentModule is TemplateMatchModule || currentModule is BlobAnalysisModule || currentModule is EdgeCaliperModule || currentModule is GeometryMeasureModule)
+                {
+                    if (mainContext.SourceImage != null && mainContext.SourceImage.Ptr != IntPtr.Zero)
+                        imageBoxExMain.Image = mainContext.SourceImage.ToBitmap();
                 }
                 else
                 {
-                    if (!(currentModule is ImageLoadModule || currentModule is TemplateMatchModule || currentModule is ColorInRangeModule) && mainContext.WorkingMask != null && mainContext.WorkingMask.Ptr != IntPtr.Zero)
+                    if (!(currentModule is ImageLoadModule || currentModule is TemplateMatchModule || currentModule is ColorInRangeModule || currentModule is BlobAnalysisModule || currentModule is EdgeCaliperModule || currentModule is GeometryMeasureModule) && mainContext.WorkingMask != null && mainContext.WorkingMask.Ptr != IntPtr.Zero)
                         imageBoxExMain.Image = mainContext.WorkingMask.ToBitmap();
                     else if (mainContext.SourceImage != null && mainContext.SourceImage.Ptr != IntPtr.Zero)
                         imageBoxExMain.Image = mainContext.SourceImage.ToBitmap();
@@ -455,29 +475,266 @@ namespace FlexVision
 
                 if (oldBmp != null) oldBmp.Dispose();
 
+
+                // ====================================================================
+                // --- SUB-LOOP EREDMÉNYEK SZINKRONIZÁLÁSA A LAPOZÁSHOZ ---
+                // ====================================================================
+                if (mainContext.SubContexts != null && mainContext.SubContexts.Count > 0)
+                {
+                    int targetIdx = Math.Min(_activeSubLoopIndex, mainContext.SubContexts.Count - 1);
+                    var targetSub = mainContext.SubContexts[targetIdx];
+
+                    if (currentModule is EdgeBasedMatchModule emm)
+                    {
+                        if (targetSub.CustomData.TryGetValue(emm.Name + "_Matches", out object mObj) && mObj is List<EdgeBasedShapeMatchingResult> subMatches)
+                        {
+                            emm.LastMatches = subMatches;
+                            emm.TargetFoundCount = subMatches.Count;
+                        }
+                        if (targetSub.CustomData.TryGetValue(emm.Name + "_Time", out object tObj) && tObj is string subTime)
+                            emm.LastExecutionTime = subTime;
+                        if (targetSub.CustomData.TryGetValue(emm.Name + "_Status", out object sObj) && sObj is string subStatus)
+                            emm.LastTestResult = subStatus;
+                    }
+                    else if (currentModule is BlobAnalysisModule blobMod)
+                    {
+                        if (targetSub.CustomData.TryGetValue(blobMod.Name + "_Blobs", out object bObj) && bObj is List<BlobResult> subBlobs)
+                        {
+                            blobMod.LastBlobs = subBlobs;
+                            blobMod.FoundBlobCount = subBlobs.Count;
+                        }
+                        if (targetSub.CustomData.TryGetValue(blobMod.Name + "_Time", out object tObj) && tObj is string subTime)
+                            blobMod.LastExecutionTime = subTime;
+                        if (targetSub.CustomData.TryGetValue(blobMod.Name + "_Status", out object sObj) && sObj is string subStatus)
+                            blobMod.LastTestResult = subStatus;
+                    }
+                    else if (currentModule is EdgeCaliperModule caliperMod)
+                    {
+                        if (targetSub.CustomData.TryGetValue(caliperMod.Name + "_Edges", out object eObj) && eObj is List<CaliperEdgeResult> subEdges)
+                        {
+                            caliperMod.LastEdges = subEdges;
+                            caliperMod.FoundEdgeCount = subEdges.Count;
+                        }
+                        if (targetSub.CustomData.TryGetValue(caliperMod.Name + "_Time", out object tObj) && tObj is string subTime)
+                            caliperMod.LastExecutionTime = subTime;
+                        if (targetSub.CustomData.TryGetValue(caliperMod.Name + "_Status", out object sObj) && sObj is string subStatus)
+                            caliperMod.LastTestResult = sObj as string;
+                    }
+                }
+
+                // Frissítjük a jobb oldali konfigurációs pult táblázatát és LED-jét
+                foreach (Control ctrl in panelSpecificContainer.Controls)
+                {
+                    if (ctrl is EdgeBasedMatchConfigControl edgeUi)
+                    {
+                        edgeUi.RefreshResultsFromModule();
+                        break;
+                    }
+                    else if (ctrl is BlobAnalysisConfigControl blobUi)
+                    {
+                        blobUi.RefreshResultsFromModule();
+                        break;
+                    }
+                    else if (ctrl is EdgeCaliperConfigControl caliperUi)
+                    {
+                        caliperUi.RefreshResultsFromModule();
+                        break;
+                    }
+                }
+
+
+                // ====================================================================
+                // --- 4. SZAKASZ: TARTÓS GYORSÍTÓTÁR KIMENTÉSE A TEACH ABLAKNAK ---
+                // ====================================================================
                 _lastInspectionCache?.Dispose();
 
-                // Létrehozunk egy új, tartós kontextust a betanító ablak számára
                 _lastInspectionCache = new InspectionContext();
-                if (mainContext.SourceImage != null)
-                {
+                if (mainContext.SourceImage != null && mainContext.SourceImage.Ptr != IntPtr.Zero)
                     _lastInspectionCache.SourceImage = mainContext.SourceImage.Copy();
-                }
+                if (mainContext.WorkingMask != null && mainContext.WorkingMask.Ptr != IntPtr.Zero)
+                    _lastInspectionCache.WorkingMask = mainContext.WorkingMask.Copy();
 
-                // Átmásoljuk a képtörténeteket (ColorHistory, GrayHistory), hogy a szűrt képek megmaradjanak
                 foreach (var kvp in mainContext.ColorHistory)
-                {
-                    _lastInspectionCache.ColorHistory[kvp.Key] = kvp.Value.Copy();
-                }
+                    if (kvp.Value != null && kvp.Value.Ptr != IntPtr.Zero) _lastInspectionCache.ColorHistory[kvp.Key] = kvp.Value.Copy();
                 foreach (var kvp in mainContext.GrayHistory)
+                    if (kvp.Value != null && kvp.Value.Ptr != IntPtr.Zero) _lastInspectionCache.GrayHistory[kvp.Key] = kvp.Value.Copy();
+
+                if (mainContext.SubContexts != null)
                 {
-                    _lastInspectionCache.GrayHistory[kvp.Key] = kvp.Value.Copy();
+                    foreach (var sub in mainContext.SubContexts)
+                    {
+                        InspectionContext subClone = new InspectionContext { Parent = _lastInspectionCache };
+                        if (sub.SourceImage != null) subClone.SourceImage = sub.SourceImage.Copy();
+                        if (sub.WorkingMask != null) subClone.WorkingMask = sub.WorkingMask.Copy();
+                        foreach (var kvp in sub.ColorHistory) subClone.ColorHistory[kvp.Key] = kvp.Value.Copy();
+                        foreach (var kvp in sub.GrayHistory) subClone.GrayHistory[kvp.Key] = kvp.Value.Copy();
+                        _lastInspectionCache.SubContexts.Add(subClone);
+                    }
                 }
             }
 
-            // Frissítjük a ListBox-ot, hogy a pipák/X-ek és a rész-ms idők azonnal megjelenjenek a sorokon!
+            // ====================================================================
+            // --- 5. SZAKASZ: GRAFIKAI FRISSÍTÉS ---
+            // ====================================================================
             listBoxPipeline.Invalidate();
+            imageBoxExMain.Invalidate(); // Kényszeríti a szaggatott ROI keret azonnali kirajzolását!
         }
+
+
+
+        public Image<Bgr, byte> GetCurrentStepInputImage(string stepLink)
+        {
+            if (_lastInspectionCache == null) return null;
+
+            // 1. Megállapítjuk a pontos forráslépés nevét
+            string targetSourceName = stepLink;
+
+            // Ha nincs konkrét lépés megadva (pl. "Previous Step" / üres), megkeressük az aktuális előtti lépést!
+            if (string.IsNullOrEmpty(targetSourceName) || targetSourceName.Contains("Previous") || targetSourceName.Contains("Auto"))
+            {
+                int currentIdx = listBoxPipeline.SelectedIndex;
+                if (currentIdx > 0)
+                {
+                    targetSourceName = PipelineSteps[currentIdx - 1].Name;
+                }
+                else if (PipelineSteps.Count > 0)
+                {
+                    targetSourceName = PipelineSteps[0].Name;
+                }
+            }
+
+            // 2. Ha al-pipeline (hurok) aktív, az éppen lapozott al-kontextusból kérjük a tiszta képet
+            if (_lastInspectionCache.SubContexts != null && _lastInspectionCache.SubContexts.Count > 0)
+            {
+                int targetIdx = Math.Min(_activeSubLoopIndex, _lastInspectionCache.SubContexts.Count - 1);
+                var targetSub = _lastInspectionCache.SubContexts[targetIdx];
+
+                // Először az előzménytárból kérjük le a konkrét forráslépés tiszta képét
+                if (targetSub.ColorHistory != null && targetSub.ColorHistory.ContainsKey(targetSourceName))
+                {
+                    var histImg = targetSub.ColorHistory[targetSourceName];
+                    if (histImg != null && histImg.Ptr != IntPtr.Zero) return histImg.Copy();
+                }
+
+                // Ha al-hurok legelső lépése vagyunk, a szülő által kivágott tiszta al-képet használjuk
+                var subImg = targetSub.GetInputColorImage(targetSourceName);
+                if (subImg != null && subImg.Ptr != IntPtr.Zero) return subImg.Copy();
+            }
+
+            // 3. Ha a főágon vagyunk, a globális előzménytárból kérjük a tiszta képet
+            if (_lastInspectionCache.ColorHistory != null && _lastInspectionCache.ColorHistory.ContainsKey(targetSourceName))
+            {
+                var mainHistImg = _lastInspectionCache.ColorHistory[targetSourceName];
+                if (mainHistImg != null && mainHistImg.Ptr != IntPtr.Zero) return mainHistImg.Copy();
+            }
+
+            var mainImg = _lastInspectionCache.GetInputColorImage(targetSourceName);
+            if (mainImg != null && mainImg.Ptr != IntPtr.Zero) return mainImg.Copy();
+
+            return null;
+        }
+
+
+
+        // ====================================================================
+        // --- REKURZÍV PIPELINE VÉGREHAJTÓ MOTOR (NESTED LOOPS ENGINE) ---
+        // ====================================================================
+        private void ExecutePipelineRecursive(InspectionContext currentContext, int startIdx, int maxTargetIdx)
+        {
+            for (int i = startIdx; i <= maxTargetIdx; i++)
+            {
+                IInspectionModule step = PipelineSteps[i];
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+
+                // 1. HA ELÉRTÜK A CIKLUS VÉGÉT JELZŐ ZÁRÓELEMET
+                if (step is SubPipelineEndModule)
+                {
+                    step.Process(currentContext);
+                    sw.Stop();
+                    if (step is BaseInspectionModule bEnd)
+                    {
+                        bEnd.ProcessingTimeMs = sw.Elapsed.TotalMilliseconds;
+                        bEnd.Status = ModuleStatus.Success;
+                    }
+                    continue; // Visszatérünk a szülő láncolathoz
+                }
+
+                // 2. FOLYAMATLÉPÉS AUTOMATA VÉGREHAJTÁSA AZ AKTUÁLIS LOKÁLIS AL-KÉPEN
+                step.Process(currentContext);
+                sw.Stop();
+
+                // Diagnosztikai idő és státusz beégetése
+                if (step is BaseInspectionModule baseMod && !(step is TemplateMatchModule))
+                {
+                    baseMod.ProcessingTimeMs = sw.Elapsed.TotalMilliseconds;
+                    baseMod.Status = ModuleStatus.Success;
+                }
+
+                // 3. TÖRTÉNELEMMÉNYEK ÉS OVERLAY MENTÉSE HELYBEN (.COPY() MÉLYMÁSOLÁSSAL)
+                if (currentContext.SourceImage != null && currentContext.SourceImage.Ptr != IntPtr.Zero)
+                    currentContext.ColorHistory[step.Name] = currentContext.SourceImage.Copy();
+                if (currentContext.WorkingMask != null && currentContext.WorkingMask.Ptr != IntPtr.Zero)
+                    currentContext.GrayHistory[step.Name] = currentContext.WorkingMask.Copy();
+
+                // 4. DINAMIKUS REKURZÍV BEÁGYAZÁSI RETESZ (Nested Loops)
+                // Ha a modul futása során al-kontextusok (SubContexts) keletkeztek (pl. a Template Match talált 4 darabot)
+                if (currentContext.SubContexts != null && currentContext.SubContexts.Count > 0)
+                {
+                    foreach (var subContext in currentContext.SubContexts)
+                    {
+                        subContext.Parent = currentContext;
+
+                        // --- JAVÍTÁS: A kivágott tiszta al-képet regisztráljuk a szülő lépés neve alatt! ---
+                        // Így a hurokban lévő 05. Color Filter pontosan ezt a tiszta al-képet kapja meg,
+                        // ha a "02. Template Matching"-re hivatkozik!
+                        if (subContext.SourceImage != null && subContext.SourceImage.Ptr != IntPtr.Zero)
+                        {
+                            subContext.ColorHistory[step.Name] = subContext.SourceImage.Copy();
+                        }
+                        if (subContext.WorkingMask != null && subContext.WorkingMask.Ptr != IntPtr.Zero)
+                        {
+                            subContext.GrayHistory[step.Name] = subContext.WorkingMask.Copy();
+                        }
+
+                        ExecutePipelineRecursive(subContext, i + 1, maxTargetIdx);
+                    }
+
+                    i = FindSubPipelineEndIndex(i);
+                }
+
+            }
+        }
+
+        private int FindSubPipelineEndIndex(int currentLoopStartIndex)
+        {
+            for (int j = currentLoopStartIndex + 1; j < PipelineSteps.Count; j++)
+            {
+                if (PipelineSteps[j] is SubPipelineEndModule)
+                {
+                    return j; // Megkeressük a hurok végét, és visszaadjuk az indexét a főágnak
+                }
+            }
+            return PipelineSteps.Count - 1; // Fallback védelem
+        }
+
+
+
+        private bool IsStepInsideSubPipeline(int stepIdx)
+        {
+            for (int k = stepIdx - 1; k >= 0; k--)
+            {
+                if (PipelineSteps[k] is SubPipelineEndModule)
+                    return false; // Előbb értünk el egy lezárást, tehát már KÍVÜL vagyunk a hurkon!
+
+                if (PipelineSteps[k] is TemplateMatchModule || PipelineSteps[k] is SubRoiGeneratorModule ||
+                   (PipelineSteps[k] is BlobAnalysisModule bm && bm.CreateSubContexts))
+                    return true;  // Nyitott hurok belsejében vagyunk!
+            }
+            return false;
+        }
+
+
+
 
         // Kis belső segédfüggvény a lezáró modul státuszának kényszerítésére
         private void bModRestoreStatus(BaseInspectionModule b)
@@ -528,8 +785,11 @@ namespace FlexVision
             var mSubRoi = new ToolStripMenuItem("Sub-ROI Generator") { ForeColor = Color_Text }; mSubRoi.Click += (s, e) => InsertModuleAtSelected(new SubRoiGeneratorModule());
             var mMatch = new ToolStripMenuItem("Template Matching") { ForeColor = Color_Text }; mMatch.Click += (s, e) => InsertModuleAtSelected(new TemplateMatchModule());
             var mEdgeMatch = new ToolStripMenuItem("Edge-Based Template Matching") { ForeColor = Color_Text }; mEdgeMatch.Click += (s, e) => InsertModuleAtSelected(new EdgeBasedMatchModule());
-
-            catFreq.DropDownItems.AddRange(new ToolStripItem[] { mAdaptive,  mSubRoi, mMatch, mEdgeMatch });
+            var blobmod = new ToolStripMenuItem("Blob Tool") { ForeColor = Color_Text }; blobmod.Click += (s, e) => InsertModuleAtSelected(new BlobAnalysisModule());
+            var calipermod = new ToolStripMenuItem("Caliper / Edge") { ForeColor = Color_Text }; calipermod.Click += (s, e) => InsertModuleAtSelected(new EdgeCaliperModule());
+            var geomMod = new ToolStripMenuItem("Geometry & Overlay Measure") { ForeColor = Color_Text };
+            geomMod.Click += (s, e) => InsertModuleAtSelected(new GeometryMeasureModule());
+            catFreq.DropDownItems.AddRange(new ToolStripItem[] { mAdaptive,  mSubRoi, mMatch, mEdgeMatch, blobmod, calipermod , geomMod });
             menuAddModule.Items.AddRange(new ToolStripItem[] { catSpatial, catBlur, catEdges, catMorph, catFreq });
         }
         private void InsertModuleAtSelected(IInspectionModule newModule)
@@ -563,19 +823,36 @@ namespace FlexVision
             PipelineSteps.Clear();
             PipelineSteps.Add(new ImageLoadModule());
         }
-        public void RefreshUI()
+        public void RefreshUI(bool forceReloadControls = false)
         {
             ReceptRegistry.ActiveSteps = this.PipelineSteps;
             int savedIndex = listBoxPipeline.SelectedIndex;
             listBoxPipeline.Items.Clear();
+
             for (int i = 0; i < PipelineSteps.Count; i++)
             {
                 if (PipelineSteps[i] is BaseInspectionModule baseMod) baseMod.StepIndex = i + 1;
                 listBoxPipeline.Items.Add(PipelineSteps[i].Name);
             }
-            if (savedIndex >= 0 && savedIndex < listBoxPipeline.Items.Count) listBoxPipeline.SelectedIndex = savedIndex;
-            else if (listBoxPipeline.Items.Count > 0) listBoxPipeline.SelectedIndex = 0;
+
+            if (listBoxPipeline.Items.Count > 0)
+            {
+                int targetIndex = (savedIndex >= 0 && savedIndex < listBoxPipeline.Items.Count) ? savedIndex : 0;
+
+                if (forceReloadControls)
+                {
+                    // Kényszerítjük az indexváltás eseményt, hogy a jobb oldali ConfigControl is újraépüljön!
+                    listBoxPipeline.SelectedIndex = -1;
+                }
+                listBoxPipeline.SelectedIndex = targetIndex;
+            }
+            else
+            {
+                panelSpecificContainer.Controls.Clear();
+            }
         }
+
+
         private void ListBoxPipeline_DrawItem(object sender, DrawItemEventArgs e)
         {
             if (e.Index < 0 || PipelineSteps == null || e.Index >= PipelineSteps.Count) return;
@@ -692,11 +969,34 @@ namespace FlexVision
 
         private void OnSaveClick(object sender, EventArgs e)
         {
-            using (SaveFileDialog sfd = new SaveFileDialog { Filter = "Vision Recipe (.vrec)|.vrec", InitialDirectory = @"C:\Test" })
+            // 1. Ha van már betöltött vagy korábban elmentett recept fájlunk, azonnal felülírjuk!
+            if (!string.IsNullOrEmpty(CurrentRecipePath) && System.IO.File.Exists(CurrentRecipePath))
             {
-                if (sfd.ShowDialog() == DialogResult.OK) VisionRecipe.SaveToFile(sfd.FileName, PipelineSteps);
+                VisionRecipe.SaveToFile(CurrentRecipePath, PipelineSteps);
+
+                // Rövid vizuális visszajelzés a gombon, hogy a mérnök lássa, megtörtént a mentés
+                string origText = btnSave.Text;
+                Color origColor = btnSave.ForeColor;
+                btnSave.Text = "✔ SAVED";
+                btnSave.ForeColor = Color.LightGreen;
+
+                Timer t = new Timer { Interval = 1200 };
+                t.Tick += (s2, e2) => { t.Stop(); btnSave.Text = origText; btnSave.ForeColor = origColor; t.Dispose(); };
+                t.Start();
+                return;
+            }
+
+            // 2. Ha még nincs betöltött fájl (pl. NEW után vagy törölt fájl esetén), feldobjuk a tallózó ablakot
+            using (SaveFileDialog sfd = new SaveFileDialog { Filter = "Vision Recipe (*.vrec)|*.vrec", InitialDirectory = @"C:\Test" })
+            {
+                if (sfd.ShowDialog() == DialogResult.OK)
+                {
+                    CurrentRecipePath = sfd.FileName; // Megjegyezzük az új fájl útvonalát a későbbi gyorsmentésekhez!
+                    VisionRecipe.SaveToFile(CurrentRecipePath, PipelineSteps);
+                }
             }
         }
+
         public void StartColorPicking()
         {
             if (imageBoxExMain.Image == null) return;
@@ -714,24 +1014,87 @@ namespace FlexVision
 
 
 
+        public void StartRoiSelection()
+        {
+            _isSelectingRoi = true;
+            _isSelectingTemplate = false;
+
+            imageBoxExMain.SelectionRegion = RectangleF.Empty;
+            imageBoxExMain.SelectionMode = ImageBoxSelectionMode.Rectangle;
+            imageBoxExMain.AutoPan = false;
+            imageBoxExMain.Cursor = Cursors.Cross;
+            imageBoxExMain.Refresh();
+        }
+
+
+
         // ====================================================================
         // --- 3. FÁZIS: INTERAKTÍV SABLON-KIJELÖLÉS INDÍTÓ RUTIN ---
         // ====================================================================
         public void StartTemplateSelection()
         {
-            if (imageBoxExMain.Image == null) return;
-
             _isSelectingTemplate = true;
             _isSelectingRoi = false;
 
-            // Kényszerítjük a Cyotek motort a négyszöges szabad kijelölésre
+            // Beállítjuk a Cyotek ImageBox kijelölési tulajdonságait
             imageBoxExMain.SelectionMode = ImageBoxSelectionMode.Rectangle;
-            imageBoxExMain.AutoPan = false; // Kikapcsoljuk a Pan-t, hogy rajzolás közben ne másszon el a kép
-            imageBoxExMain.Cursor = Cursors.Cross; // Precíz célkereszt kurzor
+            imageBoxExMain.AutoPan = false;
+            imageBoxExMain.Cursor = Cursors.Cross;
 
+            // ====================================================================
+            // --- JAVÍTÁS: INTELIGENS KIJELZŐ RETESZ A TEACH FÁZIS INDÍTÁSAKOR ---
+            // ====================================================================
             int idx = listBoxPipeline.SelectedIndex;
-            if (idx >= 0) listBoxPipeline.Items[idx] = "🎯 DRAG MOUSE TO TEACH TEMPLATE...";
+            if (idx >= 0 && PipelineSteps[idx] is EdgeBasedMatchModule emm)
+            {
+                // Megnézzük az utolsó futás gyorsítótárát (_lastInspectionCache), 
+                // amit a RunPipelineDebug mentett el nekünk unmanaged szinten
+                if (_lastInspectionCache != null && _lastInspectionCache.SubContexts != null && _lastInspectionCache.SubContexts.Count > 0)
+                {
+                    // Lekérjük a pulton éppen kiválasztott (lapozott) al-kontextust
+                    int targetIdx = Math.Min(_activeSubLoopIndex, _lastInspectionCache.SubContexts.Count - 1);
+                    var targetSub = _lastInspectionCache.SubContexts[targetIdx];
+
+                    // Megkeressük az emm előtti forrásmodult (pl. a Color Filter-t) a cache történetében
+                    if (!string.IsNullOrEmpty(emm.InputStepLink) && targetSub.ColorHistory.ContainsKey(emm.InputStepLink))
+                    {
+                        var inputImg = targetSub.ColorHistory[emm.InputStepLink];
+                        if (inputImg != null && inputImg.Ptr != IntPtr.Zero)
+                        {
+                            // !!! A FŐKÉP HELYETT AZ ELŐSZŰRT, MASZKOLT KIS KÉPET RENDERELJÜK KI !!!
+                            Bitmap oldBmp = imageBoxExMain.Image as Bitmap;
+                            imageBoxExMain.Image = inputImg.ToBitmap();
+                            oldBmp?.Dispose();
+                            return; // Megvan a helyes maszk, kilépünk a metódusból!
+                        }
+                    }
+             
+                    // Ha a konkrét történelem nincs meg, de maga a sub-kép él, akkor azt rakjuk ki háttérnek
+                    if (targetSub.SourceImage != null && targetSub.SourceImage.Ptr != IntPtr.Zero)
+                    {
+                        Bitmap oldBmp = imageBoxExMain.Image as Bitmap;
+                        imageBoxExMain.Image = targetSub.SourceImage.ToBitmap();
+                        oldBmp?.Dispose();
+                        return;
+                    }
+                }
+            }
+
+            // --- STANDARD FALLBACK LOGIKA (A te korábbi eredeti kódod a főkép visszatöltésére) ---
+            // Ez csak akkor fut le, ha a legfelső szinten (nem hurokban) indítunk el egy sima keresőt
+            string firstStepName = PipelineSteps[0].Name;
+            if (_lastInspectionCache != null && _lastInspectionCache.ColorHistory.ContainsKey(firstStepName))
+            {
+                var firstImg = _lastInspectionCache.ColorHistory[firstStepName];
+                if (firstImg != null && firstImg.Ptr != IntPtr.Zero)
+                {
+                    Bitmap oldBmp = imageBoxExMain.Image as Bitmap;
+                    imageBoxExMain.Image = firstImg.ToBitmap();
+                    oldBmp?.Dispose();
+                }
+            }
         }
+
 
         // ====================================================================
         // --- 3. FÁZIS: CYOTEK EGÉR-KIJELÖLÉS VÉGE (SELECTION CHANGED) ---
@@ -744,36 +1107,55 @@ namespace FlexVision
             int idx = listBoxPipeline.SelectedIndex;
             if (idx >= 0 && PipelineSteps[idx] is BaseInspectionModule currentMod)
             {
-                RectangleF selF = imageBoxExMain.SelectionRegion;
-                Rectangle sourceRect = new Rectangle((int)selF.X, (int)selF.Y, (int)selF.Width, (int)selF.Height);
+                // ====================================================================
+                // --- JAVÍTÁS: KÖZVETLEN RECTANGLE KINYERÉS A CYOTEK SELECTIONBÓL ---
+                // ====================================================================
+                // Mivel a SelectionRegion nálad már eleve a valós kép-pixel koordinátákat adja vissza,
+                // közvetlenül ebből képezzük a sourceRect-et, kihagyva a hibás PointToImage átszámításokat!
+                Rectangle sourceRect = Rectangle.Round(imageBoxExMain.SelectionRegion);
 
                 if (sourceRect.Width > 5 && sourceRect.Height > 5)
                 {
                     // --- A) HA AZ ÚJ ÉLALAPÚ MOTOR SABLONJÁT TANÍTJUK BE ---
                     if (_isSelectingTemplate && currentMod is EdgeBasedMatchModule emm)
                     {
-                        // ====================================================================
-                        // --- JAVÍTÁS: A TARTÓS OSZTÁLYSZINTŰ GYORSÍTÓTÁR MEGHÍVÁSA ---
-                        // ====================================================================
                         Image<Bgr, byte> processedPipelineImage = null;
+                        InspectionContext targetSub = null;
 
-                        if (_lastInspectionCache != null)
+                        // 1. Lekérjük a csúszka által mutatott aktív al-kontextust a tartós cache-ből
+                        if (_lastInspectionCache != null && _lastInspectionCache.SubContexts != null && _lastInspectionCache.SubContexts.Count > 0)
                         {
-                            // Kérjük az emm előtti modul (pl. ColorInRange) által elmentett képet a cache-ből
-                            processedPipelineImage = _lastInspectionCache.GetInputColorImage(emm.InputStepLink);
+                            int targetIdx = Math.Min(_activeSubLoopIndex, _lastInspectionCache.SubContexts.Count - 1);
+                            targetSub = _lastInspectionCache.SubContexts[targetIdx];
+
+                            // 2. SZIGORÚAN AZ INPUT IMAGE SOURCE COMBOBOXBAN BEÁLLÍTOTT KÉPET KÉRJÜK LE!
+                            processedPipelineImage = targetSub.GetInputColorImage(emm.InputStepLink);
                         }
 
                         if (processedPipelineImage != null)
                         {
                             using (Bitmap processedBmp = processedPipelineImage.ToBitmap())
                             {
-                                Bitmap croppedTemplate = CropImage(processedBmp, sourceRect);
+                                // Mivel a SelectionRegion a kijelzőn éppen aktív kiskép (tuskó) saját pixel-origoja 
+                                // szerint adja vissza az értékeket, a sourceRect koordináták már eleve lokálisak!
+                                Rectangle localSourceRect = sourceRect;
+
+                                // Biztonsági guardrail határellenőrzés a kiskép széléhez
+                                if (localSourceRect.X < 0) localSourceRect.X = 0;
+                                if (localSourceRect.Y < 0) localSourceRect.Y = 0;
+                                if (localSourceRect.X + localSourceRect.Width > processedBmp.Width) localSourceRect.Width = processedBmp.Width - localSourceRect.X;
+                                if (localSourceRect.Y + localSourceRect.Height > processedBmp.Height) localSourceRect.Height = processedBmp.Height - localSourceRect.Y;
+
+                                // Tűpontos kivágás közvetlenül a ComboBox-ból lekért képfelbontás szerint
+                                Bitmap croppedTemplate = CropImage(processedBmp, localSourceRect);
+
                                 if (croppedTemplate != null)
                                 {
                                     foreach (Control ctrl in panelSpecificContainer.Controls)
                                     {
                                         if (ctrl is EdgeBasedMatchConfigControl edgeUi)
                                         {
+                                            // Átadjuk a tökéletes maszkolt darabot a felugró szerkesztő ablaknak
                                             edgeUi.AddNewTemplateFromBmp(croppedTemplate);
                                             break;
                                         }
@@ -783,7 +1165,7 @@ namespace FlexVision
                         }
                         else
                         {
-                            // Fallback: Ha még nem futott a pipeline, a nyers főképet használjuk
+                            // Fallback ág, ha a hurok memóriája üres lenne
                             using (Bitmap fullBmp = new Bitmap(imageBoxExMain.Image))
                             {
                                 Bitmap croppedTemplate = CropImage(fullBmp, sourceRect);
@@ -791,16 +1173,13 @@ namespace FlexVision
                                 {
                                     foreach (Control ctrl in panelSpecificContainer.Controls)
                                     {
-                                        if (ctrl is EdgeBasedMatchConfigControl edgeUi)
-                                        {
-                                            edgeUi.AddNewTemplateFromBmp(croppedTemplate);
-                                            break;
-                                        }
+                                        if (ctrl is EdgeBasedMatchConfigControl edgeUi) { edgeUi.AddNewTemplateFromBmp(croppedTemplate); break; }
                                     }
                                 }
                             }
                         }
-                    }                    // --- B) HA A RÉGI HAGYOMÁNYOS SABLONT TANÍTJUK BE ---
+                    }
+                    // --- B) HA A RÉGI HAGYOMÁNYOS SABLONT TANÍTJUK BE ---
                     else if (_isSelectingTemplate && currentMod is TemplateMatchModule tmm)
                     {
                         using (Bitmap fullBmp = new Bitmap(imageBoxExMain.Image))
@@ -810,11 +1189,7 @@ namespace FlexVision
                             {
                                 foreach (Control ctrl in panelSpecificContainer.Controls)
                                 {
-                                    if (ctrl is TemplateMatchConfigControl matchUi)
-                                    {
-                                        matchUi.AddNewTemplateFromBmp(croppedTemplate);
-                                        break;
-                                    }
+                                    if (ctrl is TemplateMatchConfigControl matchUi) { matchUi.AddNewTemplateFromBmp(croppedTemplate); break; }
                                 }
                             }
                         }
@@ -825,14 +1200,31 @@ namespace FlexVision
                         if (currentMod is TemplateMatchModule oldTmm)
                         {
                             oldTmm.ROI = sourceRect;
-                            MessageBox.Show($"Keresési ROI rögzítve!\nX: {oldTmm.ROI.X}, Y: {oldTmm.ROI.Y}", "ROI Beállítva", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                            oldTmm.UseROI = true;
+                            Console.WriteLine($"Keresési ROI rögzítve!\nX: {oldTmm.ROI.X}, Y: {oldTmm.ROI.Y}");
                         }
                         else if (currentMod is EdgeBasedMatchModule edgeEmm)
                         {
                             edgeEmm.ROI = sourceRect;
-                            MessageBox.Show($"Élalapú Keresési ROI rögzítve!\nX: {edgeEmm.ROI.X}, Y: {edgeEmm.ROI.Y}", "ROI Beállítva", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                            edgeEmm.UseROI = true;
+                            Console.WriteLine($"Élalapú Keresési ROI rögzítve!\nX: {edgeEmm.ROI.X}, Y: {edgeEmm.ROI.Y}");
                         }
+                        else if (currentMod is BlobAnalysisModule blobMod)
+                        {
+                            blobMod.ROI = sourceRect;
+                            blobMod.UseROI = true;
+                            Console.WriteLine($"Blob Keresési ROI rögzítve!\nX: {blobMod.ROI.X}, Y: {blobMod.ROI.Y}");
+                        }
+                        else if (currentMod is EdgeCaliperModule caliperMod)
+                        {
+                            caliperMod.ROI = sourceRect;
+                            caliperMod.UseROI = true;
+                        }
+
+                        // Azonnal újrafuttatjuk a mérést, hogy megjelenjen a szaggatott sárga keret és a szűrt eredmény!
+                        RunPipelineDebug();
                     }
+
                 }
             }
 
@@ -848,33 +1240,67 @@ namespace FlexVision
             RefreshUI();
         }
 
+
+        private void ImageBoxExMain_Paint(object sender, PaintEventArgs e)
+        {
+            int idx = listBoxPipeline.SelectedIndex;
+            if (idx < 0 || idx >= PipelineSteps.Count) return;
+
+            Rectangle activeRoi = Rectangle.Empty;
+            bool showRoi = false;
+
+            // Lekérjük az aktuálisan kijelölt modul ROI adatait
+            if (PipelineSteps[idx] is EdgeBasedMatchModule emm && emm.UseROI)
+            {
+                activeRoi = emm.ROI;
+                showRoi = true;
+            }
+            else if (PipelineSteps[idx] is TemplateMatchModule tmm && tmm.UseROI)
+            {
+                activeRoi = tmm.ROI;
+                showRoi = true;
+            }
+            else if (PipelineSteps[idx] is BlobAnalysisModule blobMod && blobMod.UseROI) { activeRoi = blobMod.ROI; showRoi = true; }
+
+            if (showRoi && activeRoi != Rectangle.Empty && activeRoi.Width > 0 && activeRoi.Height > 0)
+            {
+                // Átszámoljuk a kép valós pixel-koordinátáit a Cyotek ablak aktuális nagyítására (Viewport)
+                RectangleF viewRect = imageBoxExMain.GetOffsetRectangle(activeRoi);
+
+                using (Pen dashedPen = new Pen(Color.Yellow, 2f))
+                {
+                    dashedPen.DashStyle = System.Drawing.Drawing2D.DashStyle.Dash;
+                    e.Graphics.DrawRectangle(dashedPen, viewRect.X, viewRect.Y, viewRect.Width, viewRect.Height);
+                }
+
+                // Kis címke a keret bal felső sarkába
+                using (Font f = new Font("Segoe UI", 8f, FontStyle.Bold))
+                using (SolidBrush b = new SolidBrush(Color.Yellow))
+                {
+                    e.Graphics.DrawString("SEARCH ROI", f, b, viewRect.X, viewRect.Y - 16);
+                }
+            }
+        }
+
+
         private void ImageBoxExMain_MouseClick(object sender, MouseEventArgs e)
         {
-            // Ellenőrizzük a golyóálló belső flaget és a kép jelenlétét
-            Console.WriteLine("Imagebox_MouseClick " + _isColorPicking);
+            // 1. HA SZÍNVÁLASZTÓ MÓDBAN VAGYUNK (Color Filter Pick)
             if (_isColorPicking && imageBoxExMain.Image != null)
             {
-                // Átszámoljuk az egér koordinátáját valós kép-koordinátává a Cyotek konverterével
                 Point imgPt = imageBoxExMain.PointToImage(e.Location);
 
                 using (Bitmap bmp = new Bitmap(imageBoxExMain.Image))
                 {
-                    // Biztonsági guardrail: Csak akkor mintavételezünk, ha a kép fizikai határain belül kattintottunk
                     if (imgPt.X >= 0 && imgPt.X < bmp.Width && imgPt.Y >= 0 && imgPt.Y < bmp.Height)
                     {
                         Color pixelColor = bmp.GetPixel(imgPt.X, imgPt.Y);
-
-                        // Átkonvertáljuk az unmanaged Emgu CV struktúrára (B, G, R sorrendben!)
                         Bgr pickedBgr = new Bgr(pixelColor.B, pixelColor.G, pixelColor.R);
 
-                        // --- ARCHITEKTÚRAI FRISSÍTÉS: INTERFÉSZ-ALAPÚ UNIVERZÁLIS ÁTADÁS ---
-                        // Megkeressük a jobb alsó panelen lévő aktív vezérlőt
                         foreach (Control ctrl in panelSpecificContainer.Controls)
                         {
-                            // Ha a kontrol megvalósítja az IColorPickable interfészt (függetlenül a típusától!)
                             if (ctrl is IColorPickable pickableUi)
                             {
-                                // Átadjuk az univerzális színt és a pontos pixel helyét
                                 pickableUi.HandlePickedColor(pickedBgr, imgPt);
                                 break;
                             }
@@ -882,12 +1308,27 @@ namespace FlexVision
                     }
                 }
 
-                // Lezárjuk a mintavételi állapotot, visszaállítjuk a kurzort és frissítünk
                 _isColorPicking = false;
                 imageBoxExMain.Cursor = Cursors.Default;
                 RefreshUI();
+                return;
+            }
+
+            // 2. HA GEOMETRIAI MÉRŐMODUL AKTÍV (Interaktív él/pont kijelölés)
+            if (!_isSelectingRoi && !_isSelectingTemplate && imageBoxExMain.Image != null)
+            {
+                Point imgPt = imageBoxExMain.PointToImage(e.Location);
+                foreach (Control ctrl in panelSpecificContainer.Controls)
+                {
+                    if (ctrl is IInteractiveGeometryTool geomTool)
+                    {
+                        geomTool.HandleMouseClick(imgPt, e.Location);
+                        break;
+                    }
+                }
             }
         }
+
 
 
         static public Bitmap CropImage(Bitmap source, Rectangle section)

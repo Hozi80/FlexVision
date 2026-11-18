@@ -453,37 +453,45 @@ namespace FlexVision
 
             try
             {
-                Console.WriteLine($"[FlexVision] {_module.Name} -> Gyári TrainTemplate élesítése közvetlenül a modul motorján...");
+                Console.WriteLine($"[FlexVision] {_module.Name} -> Módosított mesterkép rögzítése és GPU tanítás...");
 
+                // 1. Átmentjük a csúszkán finomhangolt threshold értékeket a modul paramétereibe
                 _module.LowThreshold = trackBarLowThresh.Value;
                 _module.HighThreshold = trackBarHighThresh.Value;
 
-                // ====================================================================
-                // --- JAVÍTÁS: KÖZVETLENÜL A MODUL ÉLES MOTORJÁT TANÍTJUK BE ---
-                // ====================================================================
-                _moduleEngineRef.lowThreshold = _module.LowThreshold;
-                _moduleEngineRef.highThreshold = _module.HighThreshold;
-                _moduleEngineRef.minScore = _module.MinScore;
-                _moduleEngineRef.minEdgepoints = _module.MinEdgePoints;
-                _moduleEngineRef.AngleDetectionRangeSimmetric = _module.AngleDetectionRangeSimmetric;
-                _moduleEngineRef.Accuracy = _module.AccuracyLevel;
-
-                using (Image<Gray, float> finalGrayImage = new Image<Gray, float>(_straightenedTemplateBmp))
+                // 2. Mentjük a kiegyenesített és Paint-tel átfestett Bitmappet (Multi-Template védelemmel)
+                if (_module.Templates.Count > 0 && _module.ActiveTemplateIndex >= 0 && _module.ActiveTemplateIndex < _module.Templates.Count)
                 {
-                    finalGrayImage.Save(@"C:\Test\template.png");
-                    // A betanítás közvetlenül a modul motorjában történik, így a Models[] tömb NEM fog megsemmisülni!
-                    _moduleEngineRef.TrainTemplate(finalGrayImage);
+                    _module.Templates[_module.ActiveTemplateIndex]?.Dispose();
+                    _module.Templates[_module.ActiveTemplateIndex] = new Bitmap(_straightenedTemplateBmp);
+                }
+                else
+                {
+                    _module.Templates.Add(new Bitmap(_straightenedTemplateBmp));
+                    _module.ActiveTemplateIndex = _module.Templates.Count - 1;
                 }
 
-                // Átmásoljuk az 1D tömböket a modulba, hogy a főablak SAVE gombja ki tudja menteni a .vrec-be
-                _module.Scaled = _moduleEngineRef.Scaled;
-                _module.Full = _moduleEngineRef.Full;
+                // 3. AZONNALI ÚJRATANÍTÁS A VIDEÓKÁRTYÁN A MÓDOSÍTOTT KÉPPEL
+                if (_moduleEngineRef != null)
+                {
+                    _moduleEngineRef.lowThreshold = _module.LowThreshold;
+                    _moduleEngineRef.highThreshold = _module.HighThreshold;
+                    _moduleEngineRef.minScore = _module.MinScore;
+                    _moduleEngineRef.minEdgepoints = _module.MinEdgePoints;
+                    _moduleEngineRef.AngleDetectionRangeSimmetric = _module.AngleDetectionRangeSimmetric;
+                    _moduleEngineRef.Accuracy = _module.AccuracyLevel;
 
-                _module.Templates.Clear();
-                _module.Templates.Add(new Bitmap(_straightenedTemplateBmp));
-                _module.ActiveTemplateIndex = 0;
+                    using (Image<Gray, float> updatedGray = new Image<Gray, float>(_straightenedTemplateBmp))
+                    {
+                        // Ez legenerálja a 360 fokos forgatásokat és feltölti a GPU puffereket az új képpel!
+                        _moduleEngineRef.TrainTemplate(updatedGray);
+                    }
 
-                MessageBox.Show("A sablon sikeresen rögzítve a modul éles motorjában!", "Sikeres Teach", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    _module.Scaled = _moduleEngineRef.Scaled;
+                    _module.Full = _moduleEngineRef.Full;
+                }
+
+                MessageBox.Show("A sablon grafikus módosításai sikeresen elmentve és betanítva a GPU-ra!", "Sikeres Teach", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 this.DialogResult = DialogResult.OK;
                 this.Close();
             }
@@ -492,6 +500,8 @@ namespace FlexVision
                 MessageBox.Show($"Modell élesítési hiba:\n{ex.Message}", "Hiba", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
+
+
 
 
         private EdgeBasedModelInfo360 Create1DarrayForTrainer(EdgeBasedModelInfo[] infos)

@@ -50,10 +50,12 @@ namespace FlexVision
         [Category("1. Keresési Beállítások")]
         [Description("Bekapcsolja a forgatás-invariáns (Rotation) keresési módot.")]
         public bool UseRotation { get; set; } = true;
+     
+        [Description("Ha igaz, a keresés csak a kijelölt ROI területen belül fut le.")]
+        public bool UseROI { get; set; } = false;
 
         [Category("1. Keresési Beállítások")]
-        [Description("A keresési tartomány (Region of Interest) a főkép koordináta-rendszerében.")]
-        public Rectangle ROI { get; set; } = new Rectangle(50, 50, 300, 200);
+        public Rectangle ROI { get; set; } = Rectangle.Empty;
 
         // GRÁF-ALAPÚ FORRÁSVÁLASZTÓ KAPCSOLÓ: A jobb oldali Properties rácson és az egyedi panelen legördülő menüként jelenik meg
         [Category("1. Keresési Beállítások")]
@@ -244,32 +246,73 @@ namespace FlexVision
                     List<TargetMatch> finalResults = null;
                     int successfulIdx = -1;
 
-                    // 3. MULTI-TEMPLATE CASCADE FONTOSSÁGI SORRENDBEN (FOREACH / FOR LOOP CASCADE)
-                    for (int i = 0; i < Templates.Count; i++)
+                    // ====================================================================
+                    // --- ROI (KERESÉSI TERÜLET) ELŐKÉSZÍTÉSE ---
+                    // ====================================================================
+                    Rectangle activeSearchArea = new Rectangle(0, 0, sourceBmp.Width, sourceBmp.Height);
+                    bool isRoiActive = this.UseROI && this.ROI != Rectangle.Empty && this.ROI.Width > 10 && this.ROI.Height > 10;
+
+                    if (isRoiActive)
                     {
-                        // A keresést a választott képen futtatjuk le!
-                        List<TargetMatch> currentResults = MatchEngine.MatchTemplate(Templates[i], sourceBmp);
-
-                        // Ellenőrizzük a gyári szabályrendszert a Score és Polaritás szűrésekkel
-                        if (currentResults.Count > 0)
-                        {
-                            finalResults = currentResults;
-                            successfulIdx = i;
-                            break; // Megvan az első sikeresen illeszkedő sablon, leállítjuk a cascade-ot!
-                        }
-
-                        // Biztonsági fék: ha egyetlen tökéletes sincs, az első sablon adatait mentjük el részeredménynek
-                        if (i == 0) finalResults = currentResults;
+                        // Biztonsági vágás, hogy a ROI ne lógjon ki a képből
+                        activeSearchArea = Rectangle.Intersect(activeSearchArea, this.ROI);
                     }
+
+                    // Kivágjuk a keresési zónát, ha a ROI aktív, egyébként a teljes képet használjuk
+                    Bitmap searchBmp = isRoiActive ? CropImage(sourceBmp, activeSearchArea) : sourceBmp;
+
+                    try
+                    {
+                        // 3. MULTI-TEMPLATE CASCADE FONTOSSÁGI SORRENDBEN
+                        for (int i = 0; i < Templates.Count; i++)
+                        {
+                            // A keresést a kivágott ROI képen (vagy a teljes képen) futtatjuk le
+                            List<TargetMatch> currentResults = MatchEngine.MatchTemplate(Templates[i], searchBmp);
+
+                            // ====================================================================
+                            // --- KOORDINÁTA ELTOLÁS VISSZAÁLLÍTÁSA A TELJES KÉPRE ---
+                            // ====================================================================
+                            if (isRoiActive && currentResults != null)
+                            {
+                                foreach (var match in currentResults)
+                                {
+                                    match.CenterPoint.X += activeSearchArea.X;
+                                    match.CenterPoint.Y += activeSearchArea.Y;
+
+                                    // Ha a TargetMatch tárol határoló téglalapot (BoundingBox / Rect), azt is eltoljuk:
+                                    // match.BoundingBox = new Rectangle(match.BoundingBox.X + activeSearchArea.X, match.BoundingBox.Y + activeSearchArea.Y, match.BoundingBox.Width, match.BoundingBox.Height);
+                                }
+                            }
+
+                            if (currentResults != null && currentResults.Count > 0)
+                            {
+                                finalResults = currentResults;
+                                successfulIdx = i;
+                                break;
+                            }
+
+                            if (i == 0) finalResults = currentResults;
+                        }
+                    }
+                    finally
+                    {
+                        // Memóriaszivárgás elleni védelem: ha külön képet vágtunk ki a ROI-hoz, felszabadítjuk
+                        if (isRoiActive && searchBmp != null && searchBmp != sourceBmp)
+                        {
+                            searchBmp.Dispose();
+                        }
+                    }
+
                     watch.Stop();
 
-                    // 4. BELSŐ ADATOK ÉS ÉLŐ KIJELZŐK FRISSÍTÉSE A PROPERTYGRID / CONFIG CONTROL RIAPORTÁLÁSHOZ
+                    // 4. BELSŐ ADATOK ÉS ÉLŐ KIJELZŐK FRISSÍTÉSE
                     this.LastExecutionTime = watch.ElapsedMilliseconds + " ms";
                     this.ExecutionTime = this.LastExecutionTime;
 
                     this.TargetFoundCount = finalResults != null ? finalResults.Count : 0;
                     this.LastMatches = finalResults ?? new List<TargetMatch>();
                     this.LastSuccessfulTemplateIndex = successfulIdx;
+
 
                     // ====================================================================
                     // --- 5. LÉPÉS: MULTI-TARGET GENERÁLÁS AZ AL-PIPELINE CIKLUSHOZ ---

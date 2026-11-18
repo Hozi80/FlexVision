@@ -25,7 +25,7 @@ namespace FlexVision
         // UI Kezelőelemek
         private PictureBox picTemplatePreview;
         private Label lblTemplateCounter;
-        private Button btnPrev, btnNext, btnDeleteTemplate;
+        private Button btnPrev, btnNext, btnDeleteTemplate, btnEditTemplate;
         private Button btnSelectTemplate, btnSelectRoi, btnTest;
 
         // Algoritmus paraméterek beviteli mezői
@@ -55,30 +55,62 @@ namespace FlexVision
 
         private void InitializeComponent()
         {
+            this.AutoScroll = true;
+
             // ====================================================================
             // 1. ADAG: SABLON MENEDZSER (MULTI-TEMPLATE CASCADE)
             // ====================================================================
             Label lblSection1 = new Label { Text = "ÉLALAPÚ MULTI-SABLON MENEDZSER", ForeColor = Color_Cyan, Font = new Font("Segoe UI", 8, FontStyle.Bold), Location = new Point(10, 5), AutoSize = true };
 
-            picTemplatePreview = new PictureBox { Location = new Point(10, 25), Size = new Size(120, 100), BackColor = Color.FromArgb(15, 15, 15), SizeMode = PictureBoxSizeMode.Zoom, BorderStyle = BorderStyle.FixedSingle };
+            picTemplatePreview = new PictureBox { Location = new Point(10, 25), Size = new Size(320, 320), BackColor = Color.FromArgb(15, 15, 15), SizeMode = PictureBoxSizeMode.Zoom, BorderStyle = BorderStyle.FixedSingle };
 
-            btnPrev = CreateControlBtn("◀", 140, 25, 35, 30);
-            lblTemplateCounter = new Label { Text = "0 / 0", ForeColor = Color_Text, Font = new Font("Segoe UI", 9, FontStyle.Bold), Location = new Point(180, 32), AutoSize = true };
-            btnNext = CreateControlBtn("▶", 230, 25, 35, 30);
-            btnDeleteTemplate = CreateControlBtn("❌ DELETE", 140, 65, 125, 30, Color.FromArgb(255, 120, 10));
+            btnPrev = CreateControlBtn("◀", 10, 352, 100, 28);
+            lblTemplateCounter = new Label { Text = "0 / 0", ForeColor = Color_Text, Font = new Font("Segoe UI", 9, FontStyle.Bold), Location = new Point(115, 352), Size = new Size(110, 28), TextAlign = ContentAlignment.MiddleCenter };
+            btnNext = CreateControlBtn("▶", 230, 352, 100, 28);
+            btnDeleteTemplate = CreateControlBtn("❌ DELETE TEMPLATE", 10, 386, 157, 28, Color.FromArgb(255, 120, 10));
 
             btnPrev.Click += (s, e) => { if (_module.Templates.Count > 0) { _module.ActiveTemplateIndex = (_module.ActiveTemplateIndex - 1 + _module.Templates.Count) % _module.Templates.Count; UpdateTemplateUI(); _mainEditor?.RunPipelineDebug(); } };
             btnNext.Click += (s, e) => { if (_module.Templates.Count > 0) { _module.ActiveTemplateIndex = (_module.ActiveTemplateIndex + 1) % _module.Templates.Count; UpdateTemplateUI(); _mainEditor?.RunPipelineDebug(); } };
             btnDeleteTemplate.Click += BtnDeleteTemplate_Click;
 
+
+            btnEditTemplate = CreateControlBtn("✏️ EDIT TEMPLATE", 173, 386, 157, 28, Color_Cyan);
+            btnEditTemplate.Click += (s, e) => {
+                // 1. Ellenőrizzük, hogy van-e kiválasztott sablon a listában
+                if (_module.Templates == null || _module.Templates.Count == 0)
+                {
+                    MessageBox.Show("Nincs szerkeszthető sablon! Előbb taníts be egyet a TEACH gombbal.", "Nincs sablon", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+
+                int idx = Math.Max(0, Math.Min(_module.ActiveTemplateIndex, _module.Templates.Count - 1));
+
+                // 2. Készítünk egy tiszta másolatot a meglévő sablonképből a szerkesztőnek
+                using (Bitmap currentTemplateCopy = new Bitmap(_module.Templates[idx]))
+                {
+                    // 3. Megnyitjuk a Paint/Élszerkesztő ablakot a meglévő képpel
+                    using (TemplateTrainerForm trainer = new TemplateTrainerForm(_module, currentTemplateCopy))
+                    {
+                        if (trainer.ShowDialog() == DialogResult.OK)
+                        {
+                            // 4. Ha a mentésre kattintottál, frissítjük a felületet és újrafuttatjuk a mérést
+                            UpdateTemplateUI();
+                            _mainEditor?.RunPipelineDebug();
+                            _onDataChanged?.Invoke();
+                        }
+                    }
+                }
+            };
+
             // ====================================================================
             // 2. ADAG: INTERAKTÍV AKCIÓGOMBOK
             // ====================================================================
-            btnSelectTemplate = CreateControlBtn("🎯 TEACH EDGE TEMPLATE", 10, 135, 160, 32, Color_Cyan);
+            btnSelectTemplate = CreateControlBtn("🎯 TEACH EDGE TEMPLATE", 10, 424, 320, 32, Color_Cyan);
             btnSelectTemplate.Click += (s, e) => {
                 if (_mainEditor != null)
                 {
                     var imageBox = _mainEditor.Controls.Find("imageBoxExMain", true);
+                    // JAVÍTVA: imageBox[0] indexelés visszaállítva!
                     if (imageBox.Length > 0 && imageBox[0] is ImageBoxEx cyotekBox)
                     {
                         cyotekBox.SelectionMode = ImageBoxSelectionMode.Rectangle;
@@ -89,88 +121,92 @@ namespace FlexVision
                 }
             };
 
-            btnSelectRoi = CreateControlBtn("🗺️ ROI SELECT", 180, 135, 150, 32);
+            btnSelectRoi = CreateControlBtn("🗺️ ROI SELECT", 10, 462, 157, 30);
             btnSelectRoi.Click += (s, e) => {
-                MessageBox.Show("Húzza ki a kívánt keresési zónát (ROI) a fő Live View képernyőn!", "ROI Kijelölés", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                if (_mainEditor != null) _mainEditor.StartRoiSelection();
             };
 
-            btnTest = CreateControlBtn("▶ TEST EDGE MATCH", 10, 175, 320, 35, Color.LightGreen);
+            Button btnResetRoi = CreateControlBtn("✖ RESET ROI", 173, 462, 157, 30, Color.Tomato);
+            btnResetRoi.Click += (s, e) => {
+                _module.UseROI = false;
+                _module.ROI = Rectangle.Empty;
+                _mainEditor?.RunPipelineDebug();
+                _onDataChanged?.Invoke();
+            };
+
+            btnTest = CreateControlBtn("▶ TEST EDGE MATCH", 10, 500, 320, 35, Color.LightGreen);
             btnTest.ForeColor = Color.Black;
             btnTest.Click += BtnTest_Click;
 
             // ====================================================================
             // 3. ADAG: ALGORITMUS KORLÁTOK ÉS PARAMÉTEREK
             // ====================================================================
-            Label lblSection2 = new Label { Text = "EDGE ALGORITMUS PARAMÉTEREK", ForeColor = Color_Cyan, Font = new Font("Segoe UI", 8, FontStyle.Bold), Location = new Point(10, 222), AutoSize = true };
+            Label lblSection2 = new Label { Text = "EDGE ALGORITMUS PARAMÉTEREK", ForeColor = Color_Cyan, Font = new Font("Segoe UI", 8, FontStyle.Bold), Location = new Point(10, 550), AutoSize = true };
 
-            // Küszöbértékek (Low / High)
-            Label lblLowThresh = new Label { Text = "Low Thresh:", ForeColor = Color_Text, Location = new Point(10, 245), Width = 75, Font = new Font("Segoe UI", 8) };
-            numLowThreshold = new NumericUpDown { Location = new Point(90, 243), Width = 65, Minimum = 0, Maximum = 255, Value = (decimal)_module.LowThreshold, BackColor = Color_Light, ForeColor = Color_Text, BorderStyle = BorderStyle.FixedSingle };
+            Label lblLowThresh = new Label { Text = "Low Thresh:", ForeColor = Color_Text, Location = new Point(10, 575), Width = 75, Font = new Font("Segoe UI", 8) };
+            numLowThreshold = new NumericUpDown { Location = new Point(90, 573), Width = 65, Minimum = 0, Maximum = 255, Value = (decimal)_module.LowThreshold, BackColor = Color_Light, ForeColor = Color_Text, BorderStyle = BorderStyle.FixedSingle };
             numLowThreshold.ValueChanged += (s, e) => { _module.LowThreshold = (float)numLowThreshold.Value; _onDataChanged?.Invoke(); };
 
-            Label lblHighThresh = new Label { Text = "High Thresh:", ForeColor = Color_Text, Location = new Point(170, 245), Width = 75, Font = new Font("Segoe UI", 8) };
-            numHighThreshold = new NumericUpDown { Location = new Point(255, 243), Width = 65, Minimum = 0, Maximum = 255, Value = (decimal)_module.HighThreshold, BackColor = Color_Light, ForeColor = Color_Text, BorderStyle = BorderStyle.FixedSingle };
+            Label lblHighThresh = new Label { Text = "High Thresh:", ForeColor = Color_Text, Location = new Point(170, 575), Width = 75, Font = new Font("Segoe UI", 8) };
+            numHighThreshold = new NumericUpDown { Location = new Point(255, 573), Width = 65, Minimum = 0, Maximum = 255, Value = (decimal)_module.HighThreshold, BackColor = Color_Light, ForeColor = Color_Text, BorderStyle = BorderStyle.FixedSingle };
             numHighThreshold.ValueChanged += (s, e) => { _module.HighThreshold = (float)numHighThreshold.Value; _onDataChanged?.Invoke(); };
 
-            // Min Score & Szög tolerancia
-            Label lblScore = new Label { Text = "Min Score:", ForeColor = Color_Text, Location = new Point(10, 275), Width = 75, Font = new Font("Segoe UI", 8) };
-            numScore = new NumericUpDown { Location = new Point(90, 273), Width = 65, Minimum = 0, Maximum = 1, DecimalPlaces = 2, Increment = 0.05M, Value = (decimal)_module.MinScore, BackColor = Color_Light, ForeColor = Color_Text, BorderStyle = BorderStyle.FixedSingle };
+            Label lblScore = new Label { Text = "Min Score:", ForeColor = Color_Text, Location = new Point(10, 605), Width = 75, Font = new Font("Segoe UI", 8) };
+            numScore = new NumericUpDown { Location = new Point(90, 603), Width = 65, Minimum = 0, Maximum = 1, DecimalPlaces = 2, Increment = 0.05M, Value = (decimal)_module.MinScore, BackColor = Color_Light, ForeColor = Color_Text, BorderStyle = BorderStyle.FixedSingle };
             numScore.ValueChanged += (s, e) => { _module.MinScore = (float)numScore.Value; _onDataChanged?.Invoke(); };
 
-            Label lblAngle = new Label { Text = "Tolerance ∠:", ForeColor = Color_Text, Location = new Point(170, 275), Width = 75, Font = new Font("Segoe UI", 8) };
-            numAngle = new NumericUpDown { Location = new Point(255, 273), Width = 65, Minimum = 0, Maximum = 180, Value = (decimal)_module.AngleDetectionRangeSimmetric, BackColor = Color_Light, ForeColor = Color_Text, BorderStyle = BorderStyle.FixedSingle };
+            Label lblAngle = new Label { Text = "Tolerance ∠:", ForeColor = Color_Text, Location = new Point(170, 605), Width = 75, Font = new Font("Segoe UI", 8) };
+            numAngle = new NumericUpDown { Location = new Point(255, 603), Width = 65, Minimum = 0, Maximum = 180, Value = (decimal)_module.AngleDetectionRangeSimmetric, BackColor = Color_Light, ForeColor = Color_Text, BorderStyle = BorderStyle.FixedSingle };
             numAngle.ValueChanged += (s, e) => { _module.AngleDetectionRangeSimmetric = (int)numAngle.Value; _onDataChanged?.Invoke(); };
 
-            // Min Edge Points & Elvárt darabszám
-            Label lblMinPoints = new Label { Text = "Min Edge Pts:", ForeColor = Color_Text, Location = new Point(10, 305), Width = 75, Font = new Font("Segoe UI", 8) };
-            numMinEdgePoints = new NumericUpDown { Location = new Point(90, 303), Width = 65, Minimum = 1, Maximum = 5000, Value = _module.MinEdgePoints, BackColor = Color_Light, ForeColor = Color_Text, BorderStyle = BorderStyle.FixedSingle };
+            Label lblMinPoints = new Label { Text = "Min Edge Pts:", ForeColor = Color_Text, Location = new Point(10, 635), Width = 75, Font = new Font("Segoe UI", 8) };
+            numMinEdgePoints = new NumericUpDown { Location = new Point(90, 633), Width = 65, Minimum = 1, Maximum = 5000, Value = _module.MinEdgePoints, BackColor = Color_Light, ForeColor = Color_Text, BorderStyle = BorderStyle.FixedSingle };
             numMinEdgePoints.ValueChanged += (s, e) => { _module.MinEdgePoints = (int)numMinEdgePoints.Value; _onDataChanged?.Invoke(); };
 
-            Label lblExpected = new Label { Text = "Obj. Count:", ForeColor = Color_Text, Location = new Point(170, 305), Width = 75, Font = new Font("Segoe UI", 8, FontStyle.Bold) };
-            numExpectedCount = new NumericUpDown { Location = new Point(255, 303), Width = 65, Minimum = 1, Maximum = 100, Value = _module.ExpectedObjectCount, BackColor = Color_Light, ForeColor = Color_Cyan, Font = new Font("Segoe UI", 9, FontStyle.Bold), TextAlign = HorizontalAlignment.Center, BorderStyle = BorderStyle.FixedSingle };
+            Label lblExpected = new Label { Text = "Obj. Count:", ForeColor = Color_Text, Location = new Point(170, 635), Width = 75, Font = new Font("Segoe UI", 8, FontStyle.Bold) };
+            numExpectedCount = new NumericUpDown { Location = new Point(255, 633), Width = 65, Minimum = 1, Maximum = 100, Value = _module.ExpectedObjectCount, BackColor = Color_Light, ForeColor = Color_Cyan, Font = new Font("Segoe UI", 9, FontStyle.Bold), TextAlign = HorizontalAlignment.Center, BorderStyle = BorderStyle.FixedSingle };
             numExpectedCount.ValueChanged += (s, e) => { _module.ExpectedObjectCount = (int)numExpectedCount.Value; _mainEditor?.RunPipelineDebug(); _onDataChanged?.Invoke(); };
 
-            // Engine Precíziós szint választó (Accuracy Stride)
-            Label lblAccuracy = new Label { Text = "GPU Precision:", ForeColor = Color_Text, Location = new Point(10, 335), Width = 80, Font = new Font("Segoe UI", 8) };
-            comboAccuracy = new ComboBox { Location = new Point(90, 333), Width = 110, BackColor = Color_Light, ForeColor = Color_Text, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 8) };
+            Label lblAccuracy = new Label { Text = "GPU Precision:", ForeColor = Color_Text, Location = new Point(10, 665), Width = 80, Font = new Font("Segoe UI", 8) };
+            comboAccuracy = new ComboBox { Location = new Point(90, 663), Width = 110, BackColor = Color_Light, ForeColor = Color_Text, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 8) };
             comboAccuracy.DropDownStyle = ComboBoxStyle.DropDownList;
             comboAccuracy.Items.AddRange(new string[] { "1 - Very Fast", "2 - Balanced", "3 - High Precision" });
             comboAccuracy.SelectedIndex = Math.Max(0, Math.Min(2, _module.AccuracyLevel - 1));
             comboAccuracy.SelectedIndexChanged += (s, e) => { _module.AccuracyLevel = comboAccuracy.SelectedIndex + 1; _onDataChanged?.Invoke(); };
-            // OpenCL hardver architektúra kijelző
-            lblHardwareStatus = new Label { Text = $"Engine: {_module.AccelerationEngine}", ForeColor = HardwareAccelerator.IsOpenClAvailable ? Color.LightGreen : Color.Orange, Font = new Font("Segoe UI", 7.5f, FontStyle.Italic), Location = new Point(210, 336), Width = 120, TextAlign = ContentAlignment.MiddleRight };
+
+            lblHardwareStatus = new Label { Text = $"Engine: {_module.AccelerationEngine}", ForeColor = HardwareAccelerator.IsOpenClAvailable ? Color.LightGreen : Color.Orange, Font = new Font("Segoe UI", 7.5f, FontStyle.Italic), Location = new Point(210, 666), Width = 120, TextAlign = ContentAlignment.MiddleRight };
+
             // ====================================================================
             // 4. ADAG: KÖRNYEZETI JELZŐK ÉS DIGITÁLIS LED
             // ====================================================================
-            lblExecutionTime = new Label { Text = "TIME: 0 ms", ForeColor = Color_Text, Font = new Font("Segoe UI", 10, FontStyle.Bold), Location = new Point(10, 368), AutoSize = true };
-            panelLedIndicator = new Panel { Location = new Point(250, 365), Size = new Size(70, 24), BackColor = Color.DarkGray, BorderStyle = BorderStyle.FixedSingle };
+            lblExecutionTime = new Label { Text = "TIME: 0 ms", ForeColor = Color_Text, Font = new Font("Segoe UI", 10, FontStyle.Bold), Location = new Point(10, 698), AutoSize = true };
+            panelLedIndicator = new Panel { Location = new Point(250, 695), Size = new Size(70, 24), BackColor = Color.DarkGray, BorderStyle = BorderStyle.FixedSingle };
             lblLedText = new Label { Text = "WAIT", ForeColor = Color.Black, Font = new Font("Segoe UI", 8, FontStyle.Bold), Location = new Point(0, 0), Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter };
             panelLedIndicator.Controls.Add(lblLedText);
+
             // ====================================================================
             // 5. ADAG: TALÁLATI LISTA (VIEW)
             // ====================================================================
-            Label lblSection3 = new Label { Text = "ÉLILLESZTÉSI SUB-PIXEL EREDMÉNYEK", ForeColor = Color_Cyan, Font = new Font("Segoe UI", 8, FontStyle.Bold), Location = new Point(10, 400), AutoSize = true };
-            listViewResults = new ListView { Location = new Point(10, 420), Size = new Size(320, 115), BackColor = Color_Slate, ForeColor = Color_Text, BorderStyle = BorderStyle.None, View = View.Details, FullRowSelect = true, GridLines = true, Font = new Font("Segoe UI", 8.5f) };
+            Label lblSection3 = new Label { Text = "ÉLILLESZTÉSI SUB-PIXEL EREDMÉNYEK", ForeColor = Color_Cyan, Font = new Font("Segoe UI", 8, FontStyle.Bold), Location = new Point(10, 730), AutoSize = true };
+            listViewResults = new ListView { Location = new Point(10, 750), Size = new Size(320, 120), BackColor = Color_Slate, ForeColor = Color_Text, BorderStyle = BorderStyle.None, View = View.Details, FullRowSelect = true, GridLines = true, Font = new Font("Segoe UI", 8.5f) };
             listViewResults.Columns.Add("Index", 45, HorizontalAlignment.Center);
             listViewResults.Columns.Add("Score", 65, HorizontalAlignment.Center);
             listViewResults.Columns.Add("X (Col)", 65, HorizontalAlignment.Center);
             listViewResults.Columns.Add("Y (Row)", 65, HorizontalAlignment.Center);
             listViewResults.Columns.Add("Angle", 60, HorizontalAlignment.Center);
-            // Vezérlők felpakolása az ablakra
-            this.Controls.Add(lblSection1); this.Controls.Add(picTemplatePreview); this.Controls.Add(lblTemplateCounter);
-            this.Controls.Add(btnPrev); this.Controls.Add(btnNext); this.Controls.Add(btnDeleteTemplate);
-            this.Controls.Add(btnSelectTemplate); this.Controls.Add(btnSelectRoi); this.Controls.Add(btnTest);
-            this.Controls.Add(lblSection2);
-            this.Controls.Add(lblLowThresh); this.Controls.Add(numLowThreshold);
-            this.Controls.Add(lblHighThresh); this.Controls.Add(numHighThreshold);
-            this.Controls.Add(lblScore); this.Controls.Add(numScore);
-            this.Controls.Add(lblAngle); this.Controls.Add(numAngle);
-            this.Controls.Add(lblMinPoints); this.Controls.Add(numMinEdgePoints);
-            this.Controls.Add(lblExpected); this.Controls.Add(numExpectedCount);
-            this.Controls.Add(lblAccuracy); this.Controls.Add(comboAccuracy); this.Controls.Add(lblHardwareStatus);
-            this.Controls.Add(lblExecutionTime); this.Controls.Add(panelLedIndicator);
-            this.Controls.Add(lblSection3); this.Controls.Add(listViewResults);
+
+            Label lblBottomSpacer = new Label { Location = new Point(10, 880), Size = new Size(10, 15) };
+
+            this.Controls.AddRange(new Control[] {
+                lblSection1, picTemplatePreview, btnPrev, lblTemplateCounter, btnNext, btnDeleteTemplate,btnEditTemplate,
+btnSelectTemplate, btnSelectRoi, btnResetRoi, btnTest,
+lblSection2, lblLowThresh, numLowThreshold, lblHighThresh, numHighThreshold,
+lblScore, numScore, lblAngle, numAngle, lblMinPoints, numMinEdgePoints,
+lblExpected, numExpectedCount, lblAccuracy, comboAccuracy, lblHardwareStatus,
+lblExecutionTime, panelLedIndicator, lblSection3, listViewResults, lblBottomSpacer
+});
         }
+
         // Villódzásmentes, katonás élsimított gombgyártó rekesz
         private Button CreateControlBtn(string text, int x, int y, int w, int h, Color customColor = default(Color))
         {
@@ -223,13 +259,21 @@ namespace FlexVision
         // ====================================================================
         private void BtnTest_Click(object sender, EventArgs e)
         {
-            // Elindítjuk a lánc újrafuttatását
+            // Elindítjuk a lánc újrafuttatását (ami a végén meghívja a RefreshResultsFromModule-t is)
             _onDataChanged?.Invoke();
-            // Riasztási és ciklusidő feliratok frissítése
+
+            // Biztonsági azonnali frissítés
+            RefreshResultsFromModule();
+        }
+
+        // Ezt a publikus metódust hívja meg a PipelineEditorControl is, amikor lapozol a képek között!
+        public void RefreshResultsFromModule()
+        {
             lblExecutionTime.Text = $"TIME: {_module.LastExecutionTime}";
             lblHardwareStatus.Text = $"Engine: {_module.AccelerationEngine}";
+
             // IPARI LED SZIMULÁCIÓS PANEL ÉS SZÖVEG ÁTVÁLTÁS
-            if (_module.LastTestResult.Contains("PASS"))
+            if (_module.LastTestResult != null && _module.LastTestResult.Contains("PASS"))
             {
                 lblLedText.Text = "PASS";
                 panelLedIndicator.BackColor = Color.LimeGreen;
@@ -239,19 +283,24 @@ namespace FlexVision
                 lblLedText.Text = "FAIL";
                 panelLedIndicator.BackColor = Color.Tomato;
             }
+
             // Tizedespontosságú találati lista ListView feltöltése (Tengely-korrigált Shiju rács szerint)
             listViewResults.Items.Clear();
-            for (int i = 0; i < _module.LastMatches.Count; i++)
+            if (_module.LastMatches != null)
             {
-                var match = _module.LastMatches[i];
-                ListViewItem item = new ListViewItem(i.ToString());
-                item.SubItems.Add(match.Score.ToString("F2"));
-                item.SubItems.Add(match.Y.ToString("F1")); // Valós képernyős X koordináta (Oszlop)
-                item.SubItems.Add(match.X.ToString("F1")); // Valós képernyős Y koordináta (Sor)
-                item.SubItems.Add(match.Angle.ToString("F1") + "°");
-                listViewResults.Items.Add(item);
+                for (int i = 0; i < _module.LastMatches.Count; i++)
+                {
+                    var match = _module.LastMatches[i];
+                    ListViewItem item = new ListViewItem(i.ToString());
+                    item.SubItems.Add(match.Score.ToString("F2"));
+                    item.SubItems.Add(match.Y.ToString("F1")); // Valós képernyős X koordináta (Oszlop)
+                    item.SubItems.Add(match.X.ToString("F1")); // Valós képernyős Y koordináta (Sor)
+                    item.SubItems.Add(match.Angle.ToString("F1") + "°");
+                    listViewResults.Items.Add(item);
+                }
             }
         }
+
         // ====================================================================
         // --- EXKLUZÍV JAVÍTÁS: AUTOMATIKUS OFFLINE MODELMENTŐ (TE LOGIKÁD) ---
         // ====================================================================

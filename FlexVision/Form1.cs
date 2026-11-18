@@ -155,16 +155,21 @@ namespace FlexVision
                     var loadedSteps = VisionRecipe.LoadFromFile(ofd.FileName);
                     pipelineEditor.PipelineSteps.Clear();
                     foreach (var step in loadedSteps) pipelineEditor.PipelineSteps.Add(step);
-                    pipelineEditor.RefreshUI();
+
+                    // --- ÚJ: Megjegyezzük a betöltött fájl elérési útját ---
+                    pipelineEditor.CurrentRecipePath = ofd.FileName;
+
+                    pipelineEditor.RefreshUI(forceReloadControls: true);
+                    pipelineEditor.RunPipelineDebug(stepDirection: 0, runAll: true);
 
                     string fileNameOnly = System.IO.Path.GetFileNameWithoutExtension(ofd.FileName);
                     lblRecipeName.Text = $"RECIPE: {fileNameOnly.ToUpper()}";
 
-                    // Frissítjük a középre igazítást, mert a szöveg szélessége megváltozott!
                     MainVisionForm_Resize(null, null);
                 }
             }
         }
+
 
         private void BtnUserLogin_Click(object sender, EventArgs e)
         {

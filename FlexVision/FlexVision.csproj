@@ -93,8 +93,15 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="BlobAnalysisConfigControl.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Include="BlobAnalysisModule.cs" />
     <Compile Include="ColorFilterConfigControl.cs">
       <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Include="ColorMatrixSelectorForm.cs">
+      <SubType>Form</SubType>
     </Compile>
     <Compile Include="Controls\ImageBox\DragHandle.cs" />
     <Compile Include="Controls\ImageBox\DragHandleAnchor.cs" />
@@ -145,12 +152,21 @@
       <SubType>UserControl</SubType>
     </Compile>
     <Compile Include="EdgeBasedMatchModule.cs" />
+    <Compile Include="EdgeCaliperConfigControl.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Include="EdgeCaliperModule.cs" />
     <Compile Include="Form1.cs">
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="Form1.Designer.cs">
       <DependentUpon>Form1.cs</DependentUpon>
     </Compile>
+    <Compile Include="GeometryMeasureConfigControl.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Include="GeometryMeasureModule.cs" />
+    <Compile Include="GeometryModels.cs" />
     <Compile Include="HardwareAccelerator.cs" />
     <Compile Include="IColorPickable.cs" />
     <Compile Include="InspectionEngine.cs" />

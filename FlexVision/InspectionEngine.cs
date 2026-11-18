@@ -29,89 +29,169 @@ namespace FlexVision
     {
         ImageLoad,
         OtsuFusion,
-        BlobDetect
+        BlobDetect,
+        EdgeDetect,
+        EdgeBasedMatch,
+        TemplateMatch,
+        ColorInrange
     }
 
     // ====================================================================
     // --- ADATKÖRNYEZET (INSPECTION CONTEXT) MÉRÉSI ADATTÁRRAL ---
     // ====================================================================
 
-    public class InspectionContext : IDisposable
-    {
-        public Image<Bgr, byte> SourceImage { get; set; }
-        public Image<Gray, byte> WorkingMask { get; set; }
-        public PointF LocalOffset { get; set; } = new PointF(0, 0);
-        public double LocalAngle { get; set; } = 0.0;
 
-        // --- JAVÍTÁS: Független, szálbiztos unmanaged képtörténelem tároló ---
-        public Dictionary<string, Image<Bgr, byte>> ColorHistory { get; set; } = new Dictionary<string, Image<Bgr, byte>>();
-        public Dictionary<string, Image<Gray, byte>> GrayHistory { get; set; } = new Dictionary<string, Image<Gray, byte>>();
+        public class InspectionContext : IDisposable
+        {
+            public Image<Bgr, byte> SourceImage { get; set; }
+            public Image<Gray, byte> WorkingMask { get; set; }
+            public PointF LocalOffset { get; set; } = new PointF(0, 0);
+            public double LocalAngle { get; set; } = 0.0;
 
-        public Dictionary<string, BaseFeature> Features { get; set; } = new Dictionary<string, BaseFeature>();
-        public Dictionary<string, object> CustomData { get; set; } = new Dictionary<string, object>();
-        public List<InspectionContext> SubContexts { get; set; } = new List<InspectionContext>();
+            // Független, szálbiztos unmanaged képtörténelem tároló
+            public Dictionary<string, Image<Bgr, byte>> ColorHistory { get; set; } = new Dictionary<string, Image<Bgr, byte>>();
+            public Dictionary<string, Image<Gray, byte>> GrayHistory { get; set; } = new Dictionary<string, Image<Gray, byte>>();
 
+            public Dictionary<string, BaseFeature> Features { get; set; } = new Dictionary<string, BaseFeature>();
+            public Dictionary<string, object> CustomData { get; set; } = new Dictionary<string, object>();
+
+            // --- REKURZÍV IPARI HURKOLÓ INFRASTRUKTÚRA ---
+            public InspectionContext Parent { get; set; } = null; // A szülő hurok környezetmutatója (Nested Loops-hoz)
+            public List<InspectionContext> SubContexts { get; set; } = new List<InspectionContext>();
+
+        // ====================================================================
+        // --- DINAMIKUS, REKURZÍV BGR KÉPLEKÉRŐ MOTOR (GOLYÓÁLLÓ COUPLING) ---
+        // ====================================================================
         public Image<Bgr, byte> GetInputColorImage(string stepLink)
         {
-            // AUTOMATIKUS FALLBACK LOGIKA: Ha előző lépést kérünk, kiszedjük a legutoljára elmentett érvényes képet
+            // 1. AUTOMATIKUS FALLBACK LOGIKA: Ha az előző lépést kérjük
             if (string.IsNullOrEmpty(stepLink) || stepLink == "Default (Előző lépés)")
             {
                 if (ColorHistory.Count > 0)
                 {
                     var lastKey = ColorHistory.Keys.Last();
                     if (ColorHistory[lastKey] != null && ColorHistory[lastKey].Ptr != IntPtr.Zero)
-                        return ColorHistory[lastKey].Copy(); // .Copy() = Tiszta, független C++ mély másolat!
+                        return ColorHistory[lastKey].Copy();
                 }
-                return null;
+
+                // Ha al-hurokban vagyunk és üres a helyi történet, a saját kivágott SourceImage-ünket adjuk vissza
+                if (this.Parent != null && this.SourceImage != null && this.SourceImage.Ptr != IntPtr.Zero)
+                {
+                    return this.SourceImage.Copy();
+                }
+
+                if (this.Parent != null)
+                {
+                    return this.Parent.GetInputColorImage(stepLink);
+                }
+
+                return this.SourceImage != null && this.SourceImage.Ptr != IntPtr.Zero ? this.SourceImage.Copy() : null;
             }
 
-            // Ha konkrét lépésnevet keresünk (pl. ComboBox kijelölés alapján)
+            // 2. Ha konkrét lépésnevet keresünk, és benne van a helyi történetben
             if (ColorHistory.ContainsKey(stepLink) && ColorHistory[stepLink] != null && ColorHistory[stepLink].Ptr != IntPtr.Zero)
             {
                 return ColorHistory[stepLink].Copy();
             }
+
+            // 2/B. SORSZÁM-FÜGGETLEN KERESÉS (Pl. lépés beszúrása/törlése után)
+            string pureTarget = stepLink.Contains(". ") ? stepLink.Substring(stepLink.IndexOf(". ") + 2) : stepLink;
+            foreach (var kvp in ColorHistory)
+            {
+                if (kvp.Key.EndsWith(pureTarget) && kvp.Value != null && kvp.Value.Ptr != IntPtr.Zero)
+                {
+                    return kvp.Value.Copy();
+                }
+            }
+
+            // 3. AL-HUROK VÉDELEM: Ha sub-pipeline-ban vagyunk (this.Parent != null), és a kért lépés 
+            // a hurok nyitó moduljára (pl. "02. Template Matching") vagy annál korábbra mutat:
+            if (this.Parent != null)
+            {
+                // A subContext legelső bejegyzése mindig maga a tiszta, kivágott al-kép!
+                if (ColorHistory.Count > 0)
+                {
+                    var firstKey = ColorHistory.Keys.First();
+                    if (ColorHistory[firstKey] != null && ColorHistory[firstKey].Ptr != IntPtr.Zero)
+                        return ColorHistory[firstKey].Copy();
+                }
+
+                if (this.SourceImage != null && this.SourceImage.Ptr != IntPtr.Zero)
+                    return this.SourceImage.Copy();
+
+                return this.Parent.GetInputColorImage(stepLink);
+            }
+
             return null;
         }
 
+
+        // ====================================================================
+        // --- DINAMIKUS, REKURZÍV GRAY KÉPLEKÉRŐ MOTOR (GOLYÓÁLLÓ COUPLING) ---
+        // ====================================================================
         public Image<Gray, byte> GetInputGrayImage(string stepLink)
-        {
-            if (string.IsNullOrEmpty(stepLink) || stepLink == "Default (Előző lépés)")
             {
-                if (GrayHistory.Count > 0)
+                // 1. AUTOMATIKUS FALLBACK LOGIKA: Ha előző lépést kérünk
+                if (string.IsNullOrEmpty(stepLink) || stepLink == "Default (Előző lépés)")
                 {
-                    var lastKey = GrayHistory.Keys.Last();
-                    if (GrayHistory[lastKey] != null && GrayHistory[lastKey].Ptr != IntPtr.Zero)
-                        return GrayHistory[lastKey].Copy();
+                    if (GrayHistory.Count > 0)
+                    {
+                        var lastKey = GrayHistory.Keys.Last();
+                        if (GrayHistory[lastKey] != null && GrayHistory[lastKey].Ptr != IntPtr.Zero)
+                            return GrayHistory[lastKey].Copy();
+                    }
+
+                    if (this.Parent != null)
+                    {
+                        return this.Parent.GetInputGrayImage(stepLink);
+                    }
+
+                    return this.WorkingMask != null && this.WorkingMask.Ptr != IntPtr.Zero ? this.WorkingMask.Copy() : null;
                 }
+
+                // 2. Konkrét lépésnév keresése a helyi történelemben
+                if (GrayHistory.ContainsKey(stepLink) && GrayHistory[stepLink] != null && GrayHistory[stepLink].Ptr != IntPtr.Zero)
+                {
+                    return GrayHistory[stepLink].Copy();
+                }
+
+                // 3. --- REKURZÍV FELTERJESZTÉS ---
+                if (this.Parent != null)
+                {
+                    return this.Parent.GetInputGrayImage(stepLink);
+                }
+
                 return null;
             }
 
-            if (GrayHistory.ContainsKey(stepLink) && GrayHistory[stepLink] != null && GrayHistory[stepLink].Ptr != IntPtr.Zero)
+            // ====================================================================
+            // --- GOLYÓÁLLÓ REKURZÍV MEMÓRIA FELSZABADÍTÁS (MEMORY LEAK VÉDELEM) ---
+            // ====================================================================
+            public void Dispose()
             {
-                return GrayHistory[stepLink].Copy();
-            }
-            return null;
-        }
+                SourceImage?.Dispose();
+                WorkingMask?.Dispose();
 
-        public void Dispose()
-        {
-            SourceImage?.Dispose();
-            WorkingMask?.Dispose();
+                // Biztonságos unmanaged erőforrás-felszabadítás a szótárakban
+                foreach (var img in ColorHistory.Values) img?.Dispose();
+                foreach (var img in GrayHistory.Values) img?.Dispose();
 
-            // Biztonságos unmanaged erőforrás-felszabadítás
-            foreach (var img in ColorHistory.Values) img?.Dispose();
-            foreach (var img in GrayHistory.Values) img?.Dispose();
+                ColorHistory.Clear();
+                GrayHistory.Clear();
 
-            ColorHistory.Clear();
-            GrayHistory.Clear();
-
-            if (SubContexts != null)
-            {
-                foreach (var sub in SubContexts) sub.Dispose();
-                SubContexts.Clear();
+                // A rekurzív fa automatikusan megsemmisíti az összes al-hurok (Nested Loops) unmanaged memóriáját is!
+                if (SubContexts != null)
+                {
+                    foreach (var sub in SubContexts)
+                    {
+                        sub?.Dispose();
+                    }
+                    SubContexts.Clear();
+                }
             }
         }
-    }
+    
+
 
     // ====================================================================
     // --- FOLYAMATLÉPÉSEK INTERFÉSZE ---
@@ -422,13 +502,21 @@ namespace FlexVision
         public override void Process(InspectionContext context)
         {
             if (context.WorkingMask == null) return;
+
             Image<Gray, byte> result = context.WorkingMask.Clone();
             using (Mat element = CvInvoke.GetStructuringElement(ElementShape.Rectangle, new Size(ElementSize, ElementSize), new Point(-1, -1)))
             {
                 CvInvoke.MorphologyEx(context.WorkingMask, result, Operation, element, new Point(-1, -1), Iterations, BorderType.Constant, new MCvScalar());
             }
-            context.WorkingMask.Dispose(); context.WorkingMask = result;
+
+            context.WorkingMask.Dispose();
+            context.WorkingMask = result;
+
+            // --- JAVÍTÁS: Szinkronizáljuk a színes csatornát is a rákövetkező moduloknak ---
+            context.SourceImage?.Dispose();
+            context.SourceImage = context.WorkingMask.Convert<Bgr, byte>();
         }
+
     }
 
 
