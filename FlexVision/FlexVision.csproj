@@ -169,6 +169,7 @@
     <Compile Include="GeometryModels.cs" />
     <Compile Include="HardwareAccelerator.cs" />
     <Compile Include="IColorPickable.cs" />
+    <Compile Include="ImageSaveModule.cs" />
     <Compile Include="InspectionEngine.cs" />
     <Compile Include="InspectionFeatures.cs" />
     <Compile Include="Inspections\ComputeContext.cs" />
@@ -180,6 +181,9 @@
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="PipelineEditorControl.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Include="ProductionRunControl.cs">
       <SubType>UserControl</SubType>
     </Compile>
     <Compile Include="Program.cs" />

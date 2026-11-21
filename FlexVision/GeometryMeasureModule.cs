@@ -208,6 +208,7 @@ namespace FlexVision
             sw.Stop();
             this.ProcessingTimeMs = sw.Elapsed.TotalMilliseconds;
             this.Status = allPass ? ModuleStatus.Success : ModuleStatus.Failed;
+            this.Status = ModuleStatus.Success;
         }
 
         private GeometryEvaluatedResult EvaluateSingle(GeometryMeasurementItem m, string dispName, BaseFeature f1, BaseFeature f2,

@@ -460,14 +460,14 @@ namespace FlexVision
                     }
                 }
                 // 2. HA KÍVÜL VAGYUNK A HURKON (PL. 10. GEOMETRY & OVERLAY), A TELJES NAGY KÉPET MUTATJUK!
-                else if (currentModule is TemplateMatchModule || currentModule is BlobAnalysisModule || currentModule is EdgeCaliperModule || currentModule is GeometryMeasureModule)
+                else if (currentModule is TemplateMatchModule || currentModule is BlobAnalysisModule || currentModule is EdgeCaliperModule || currentModule is GeometryMeasureModule || currentModule is ImageSaveModule)
                 {
                     if (mainContext.SourceImage != null && mainContext.SourceImage.Ptr != IntPtr.Zero)
                         imageBoxExMain.Image = mainContext.SourceImage.ToBitmap();
                 }
                 else
                 {
-                    if (!(currentModule is ImageLoadModule || currentModule is TemplateMatchModule || currentModule is ColorInRangeModule || currentModule is BlobAnalysisModule || currentModule is EdgeCaliperModule || currentModule is GeometryMeasureModule) && mainContext.WorkingMask != null && mainContext.WorkingMask.Ptr != IntPtr.Zero)
+                    if (!(currentModule is ImageLoadModule || currentModule is TemplateMatchModule || currentModule is ColorInRangeModule || currentModule is BlobAnalysisModule || currentModule is EdgeCaliperModule || currentModule is GeometryMeasureModule || currentModule is ImageSaveModule) && mainContext.WorkingMask != null && mainContext.WorkingMask.Ptr != IntPtr.Zero)
                         imageBoxExMain.Image = mainContext.WorkingMask.ToBitmap();
                     else if (mainContext.SourceImage != null && mainContext.SourceImage.Ptr != IntPtr.Zero)
                         imageBoxExMain.Image = mainContext.SourceImage.ToBitmap();
@@ -656,7 +656,14 @@ namespace FlexVision
                         bEnd.ProcessingTimeMs = sw.Elapsed.TotalMilliseconds;
                         bEnd.Status = ModuleStatus.Success;
                     }
-                    continue; // Visszatérünk a szülő láncolathoz
+
+                    // KRITIKUS JAVÍTÁS: Ha al-kontextusban (kisképen) vagyunk, ITT AZONNAL KILÉPÜNK A CIKLUSBÓL!
+                    // Így a 12. Geometry és a 13. Save Image NEM fut le 6-szor a kisképeken!
+                    if (currentContext.Parent != null)
+                    {
+                        break;
+                    }
+                    continue;
                 }
 
                 // 2. FOLYAMATLÉPÉS AUTOMATA VÉGREHAJTÁSA AZ AKTUÁLIS LOKÁLIS AL-KÉPEN
@@ -789,7 +796,12 @@ namespace FlexVision
             var calipermod = new ToolStripMenuItem("Caliper / Edge") { ForeColor = Color_Text }; calipermod.Click += (s, e) => InsertModuleAtSelected(new EdgeCaliperModule());
             var geomMod = new ToolStripMenuItem("Geometry & Overlay Measure") { ForeColor = Color_Text };
             geomMod.Click += (s, e) => InsertModuleAtSelected(new GeometryMeasureModule());
-            catFreq.DropDownItems.AddRange(new ToolStripItem[] { mAdaptive,  mSubRoi, mMatch, mEdgeMatch, blobmod, calipermod , geomMod });
+
+            var mSaveImg = new ToolStripMenuItem("Save Image (Overlay / Raw)") { ForeColor = Color_Text };
+            mSaveImg.Click += (s, e) => InsertModuleAtSelected(new ImageSaveModule());
+
+
+            catFreq.DropDownItems.AddRange(new ToolStripItem[] { mAdaptive,  mSubRoi, mMatch, mEdgeMatch, blobmod, calipermod , geomMod, mSaveImg });
             menuAddModule.Items.AddRange(new ToolStripItem[] { catSpatial, catBlur, catEdges, catMorph, catFreq });
         }
         private void InsertModuleAtSelected(IInspectionModule newModule)

@@ -26,6 +26,8 @@ namespace FlexVision
         private TabPage tabSetupMode;
 
         private PipelineEditorControl pipelineEditor;
+        
+        private ProductionRunControl runControl;
 
         public MainVisionForm()
         {
@@ -111,14 +113,17 @@ namespace FlexVision
             this.Controls.Add(tabControlMain);
             panelTopBar.SendToBack();
 
-            // RUN MODE BELSŐ
-            Label lblRunTitle = new Label { Text = "PRODUCTION INSPECTION ACTIVE", ForeColor = Color_Text_White, Font = new Font("Segoe UI", 16, FontStyle.Bold), Location = new Point(30, 30), AutoSize = true };
-            tabRunMode.Controls.Add(lblRunTitle);
 
             // SETUP MODE BELSŐ
             pipelineEditor = new PipelineEditorControl();
             tabSetupMode.Controls.Add(pipelineEditor);
             pipelineEditor.RefreshUI();
+
+            // RUN MODE BELSŐ
+            runControl = new ProductionRunControl(pipelineEditor);
+            tabRunMode.Controls.Add(runControl);
+
+
 
             // Középre igazítás kényszerítése az első induláskor
             MainVisionForm_Resize(null, null);
@@ -214,8 +219,10 @@ namespace FlexVision
         {
             tabControlMain.SelectedTab = tabRunMode;
             lblRecipeName.ForeColor = Color_Accent_Cyan;
+            runControl?.ExecuteSingleCycle();
             MainVisionForm_Resize(null, null);
         }
+
         private void BtnSetupMode_Click(object sender, EventArgs e)
         {
             if (!UserSession.Instance.CanEditPipeline()) return;

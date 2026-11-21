@@ -31,6 +31,7 @@ namespace FlexVision
     [XmlInclude(typeof(BlobAnalysisModule))]
     [XmlInclude(typeof(EdgeCaliperModule))]
     [XmlInclude(typeof(GeometryMeasureModule))]
+    [XmlInclude(typeof(ImageSaveModule))]
 
     // --- ÚJ RECEPTMENTÉSI REGISZTRÁCIÓK ---
     [XmlInclude(typeof(SubPipelineEndModule))] // Regisztráljuk az automata Scope-lezáró modult!
