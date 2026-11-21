@@ -31,17 +31,23 @@ namespace FlexVision
         private Label lblTotalCount, lblPassCount, lblFailCount, lblYieldRate;
         private ListView listViewRunResults;
 
-        // Vezérlőgombok
+        // Vezérlőgombok és hibakereső eszközök
         private Button btnSingleTrigger;
         private Button btnRunFolder;
         private Button btnContinuous;
         private Button btnResetStats;
         private NumericUpDown numDelayMs;
+        private CheckBox chkStopOnFail;
+        private Button btnDebugFail;
 
         private int _totalInspected = 0;
         private int _passCount = 0;
         private int _failCount = 0;
+        private int _firstFailedStepIndex = -1;
         private CancellationTokenSource _cts = null;
+
+        // Esemény a főablaknak a Setup módba való ugráshoz (átadja az első hibás lépés indexét)
+        public event Action<int> OnDebugRequested;
 
         public ProductionRunControl(PipelineEditorControl editorRef)
         {
@@ -73,9 +79,7 @@ namespace FlexVision
                 }
             };
 
-            // ====================================================================
-            // --- BAL OLDAL: NAGY LIVE PRODUCTION KIJELZŐ ---
-            // ====================================================================
+            // BAL OLDAL: NAGY LIVE PRODUCTION KIJELZŐ
             Panel pHeaderLeft = new Panel { Dock = DockStyle.Top, Height = 32, BackColor = Color_Light };
             pHeaderLeft.Controls.Add(new Label { Text = "🏭 PRODUCTION LIVE INSPECTION VIEW", ForeColor = Color_Cyan, Font = new Font("Segoe UI", 9f, FontStyle.Bold), Location = new Point(10, 7), AutoSize = true });
 
@@ -90,17 +94,15 @@ namespace FlexVision
             splitMain.Panel1.Controls.Add(imageBoxRun);
             splitMain.Panel1.Controls.Add(pHeaderLeft);
 
-            // ====================================================================
-            // --- JOBB OLDAL: VEZÉRLÉS, PASS/FAIL LED, STATISZTIKA ÉS MÉRÉSEK ---
-            // ====================================================================
-            Panel rightPanel = new Panel { Dock = DockStyle.Fill, BackColor = Color_Panel, Padding = new Padding(12) };
+            // JOBB OLDAL: VEZÉRLÉS, PASS/FAIL LED, STATISZTIKA ÉS MÉRÉSEK
+            Panel rightPanel = new Panel { Dock = DockStyle.Fill, BackColor = Color_Panel, Padding = new Padding(12), AutoScroll = true };
             splitMain.Panel2.Controls.Add(rightPanel);
 
             // 1. HATALMAS PASS / FAIL JELZŐTÁBLA
             panelMasterStatus = new Panel
             {
                 Location = new Point(12, 12),
-                Size = new Size(360, 85),
+                Size = new Size(360, 80),
                 BackColor = Color.FromArgb(55, 55, 55),
                 BorderStyle = BorderStyle.FixedSingle
             };
@@ -120,36 +122,57 @@ namespace FlexVision
                 Text = "Cycle Time: 0.0 ms",
                 ForeColor = Color_Cyan,
                 Font = new Font("Segoe UI", 10f, FontStyle.Bold),
-                Location = new Point(12, 105),
+                Location = new Point(12, 100),
                 AutoSize = true
             };
 
-            // 2. VEZÉRLŐ GOMBOK (Single, Folder Batch, Continuous)
-            btnSingleTrigger = CreateBtn("⚡ SINGLE TRIGGER", 12, 135, 360, 42, Color.LimeGreen, Color.Black);
+            // 2. VEZÉRLŐ GOMBOK
+            btnSingleTrigger = CreateBtn("⚡ SINGLE TRIGGER", 12, 128, 360, 40, Color.LimeGreen, Color.Black);
             btnSingleTrigger.Click += (s, e) => ExecuteSingleCycle();
 
-            btnRunFolder = CreateBtn("📂 RUN FOLDER (BATCH TEST)", 12, 185, 360, 38, Color_Cyan, Color.Black);
+            btnRunFolder = CreateBtn("📂 RUN FOLDER (BATCH TEST)", 12, 175, 360, 36, Color_Cyan, Color.Black);
             btnRunFolder.Click += BtnRunFolder_Click;
 
-            btnContinuous = CreateBtn("🔄 START CONTINUOUS LOOP", 12, 231, 230, 38, Color_Light, Color.White);
+            btnContinuous = CreateBtn("🔄 START CONTINUOUS LOOP", 12, 218, 230, 36, Color_Light, Color.White);
             btnContinuous.Click += BtnContinuous_Click;
 
-            Label lblDelay = new Label { Text = "Delay (ms):", ForeColor = Color_Text, Location = new Point(250, 241), AutoSize = true, Font = new Font("Segoe UI", 8f) };
-            numDelayMs = new NumericUpDown { Location = new Point(312, 238), Width = 60, Minimum = 0, Maximum = 5000, Value = 150, BackColor = Color_Light, ForeColor = Color_Text, BorderStyle = BorderStyle.FixedSingle };
+            Label lblDelay = new Label { Text = "Delay (ms):", ForeColor = Color_Text, Location = new Point(250, 227), AutoSize = true, Font = new Font("Segoe UI", 8f) };
+            numDelayMs = new NumericUpDown { Location = new Point(312, 224), Width = 60, Minimum = 0, Maximum = 5000, Value = 150, BackColor = Color_Light, ForeColor = Color_Text, BorderStyle = BorderStyle.FixedSingle };
+
+            // --- ÚJ: STOP ON FAIL ÉS DEBUG GOMB SÁV ---
+            chkStopOnFail = new CheckBox
+            {
+                Text = "🛑 Stop on Fail",
+                ForeColor = Color.Orange,
+                Location = new Point(12, 265),
+                AutoSize = true,
+                Checked = true,
+                Font = new Font("Segoe UI", 9f, FontStyle.Bold)
+            };
+
+            btnDebugFail = CreateBtn("🐞 DEBUG FAILED STEP", 145, 261, 227, 32, Color_Light, Color.Gray);
+            btnDebugFail.Enabled = false;
+            btnDebugFail.Click += (s, e) =>
+            {
+                if (_firstFailedStepIndex >= 0)
+                {
+                    OnDebugRequested?.Invoke(_firstFailedStepIndex);
+                }
+            };
 
             // 3. GYÁRTÁSI STATISZTIKA PANEL
             Panel panelStats = new Panel
             {
-                Location = new Point(12, 282),
-                Size = new Size(360, 110),
+                Location = new Point(12, 304),
+                Size = new Size(360, 105),
                 BackColor = Color_Bg,
                 BorderStyle = BorderStyle.FixedSingle
             };
 
-            lblTotalCount = new Label { Text = "TOTAL: 0", ForeColor = Color_Text, Font = new Font("Segoe UI", 9.5f, FontStyle.Bold), Location = new Point(12, 12), AutoSize = true };
-            lblPassCount = new Label { Text = "PASS: 0", ForeColor = Color.LimeGreen, Font = new Font("Segoe UI", 9.5f, FontStyle.Bold), Location = new Point(12, 42), AutoSize = true };
-            lblFailCount = new Label { Text = "FAIL: 0", ForeColor = Color.Tomato, Font = new Font("Segoe UI", 9.5f, FontStyle.Bold), Location = new Point(185, 42), AutoSize = true };
-            lblYieldRate = new Label { Text = "YIELD: 0.0 %", ForeColor = Color_Cyan, Font = new Font("Segoe UI", 10f, FontStyle.Bold), Location = new Point(12, 74), AutoSize = true };
+            lblTotalCount = new Label { Text = "TOTAL: 0", ForeColor = Color_Text, Font = new Font("Segoe UI", 9.5f, FontStyle.Bold), Location = new Point(12, 10), AutoSize = true };
+            lblPassCount = new Label { Text = "PASS: 0", ForeColor = Color.LimeGreen, Font = new Font("Segoe UI", 9.5f, FontStyle.Bold), Location = new Point(12, 40), AutoSize = true };
+            lblFailCount = new Label { Text = "FAIL: 0", ForeColor = Color.Tomato, Font = new Font("Segoe UI", 9.5f, FontStyle.Bold), Location = new Point(185, 40), AutoSize = true };
+            lblYieldRate = new Label { Text = "YIELD: 0.0 %", ForeColor = Color_Cyan, Font = new Font("Segoe UI", 10f, FontStyle.Bold), Location = new Point(12, 70), AutoSize = true };
 
             btnResetStats = CreateBtn("RESET", 275, 10, 72, 26, Color_Light, Color.Orange);
             btnResetStats.Font = new Font("Segoe UI", 7.5f, FontStyle.Bold);
@@ -162,12 +185,12 @@ namespace FlexVision
             panelStats.Controls.AddRange(new Control[] { lblTotalCount, lblPassCount, lblFailCount, lblYieldRate, btnResetStats });
 
             // 4. MÉRÉSI EREDMÉNYEK TÁBLÁZAT
-            Label lblTableTitle = new Label { Text = "CURRENT CYCLE MEASUREMENTS", ForeColor = Color_Cyan, Font = new Font("Segoe UI", 8.5f, FontStyle.Bold), Location = new Point(12, 405), AutoSize = true };
+            Label lblTableTitle = new Label { Text = "CURRENT CYCLE MEASUREMENTS", ForeColor = Color_Cyan, Font = new Font("Segoe UI", 8.5f, FontStyle.Bold), Location = new Point(12, 420), AutoSize = true };
 
             listViewRunResults = new ListView
             {
-                Location = new Point(12, 427),
-                Size = new Size(360, 260),
+                Location = new Point(12, 442),
+                Size = new Size(360, 250),
                 BackColor = Color_Bg,
                 ForeColor = Color_Text,
                 BorderStyle = BorderStyle.FixedSingle,
@@ -183,6 +206,7 @@ namespace FlexVision
             rightPanel.Controls.AddRange(new Control[] {
                 panelMasterStatus, lblCycleTime,
                 btnSingleTrigger, btnRunFolder, btnContinuous, lblDelay, numDelayMs,
+                chkStopOnFail, btnDebugFail,
                 panelStats, lblTableTitle, listViewRunResults
             });
 
@@ -192,42 +216,33 @@ namespace FlexVision
         // ====================================================================
         // --- EGYETLEN CIKLUS VÉGREHAJTÁSA (CORE RUN ENGINE) ---
         // ====================================================================
-        public void ExecuteSingleCycle(string overrideImagePath = null)
+        public bool ExecuteSingleCycle(string overrideImagePath = null)
         {
             var steps = _editorRef?.PipelineSteps;
-            if (steps == null || steps.Count == 0) return;
+            if (steps == null || steps.Count == 0) return true;
 
             // Ha mappából futtatunk (Batch), átírjuk az első ImageLoadModule elérési útját
-            if (!string.IsNullOrEmpty(overrideImagePath) && steps.Count > 0 && steps[0] is ImageLoadModule loadMod)
+            // (Így ha hibára fut, a Setup mód is pontosan ezt a hibás képet fogja betölteni!)
+            if (!string.IsNullOrEmpty(overrideImagePath) && steps.Count > 0 && steps.FirstOrDefault() is ImageLoadModule loadMod)
             {
                 loadMod.FilePath = overrideImagePath;
             }
-
             var totalSw = System.Diagnostics.Stopwatch.StartNew();
             bool overallPass = true;
-
+            _firstFailedStepIndex = -1;
             using (InspectionContext runContext = new InspectionContext())
             {
-                // Végrehajtjuk a teljes pipeline-t a rekurzív motorral
                 ExecuteStepsRecursive(steps, runContext, 0, steps.Count - 1);
-
                 totalSw.Stop();
-
-                // Kiértékeljük az összes modul státuszát
-                foreach (var step in steps)
+                // Megkeressük az első hibás lépést a listában
+                for (int i = 0; i < steps.Count; i++)
                 {
-                    if (step.Status == ModuleStatus.Failed)
+                    if (steps[i].Status == ModuleStatus.Failed)
                     {
-                        Console.WriteLine("Failed Step: " + step.Name);
-                        if (step.Name != "Geometry & Overlay")
-                        {
-                            overallPass = false;
-                            break;
-                        }
+                        overallPass = false;
+                        if (_firstFailedStepIndex == -1) _firstFailedStepIndex = i;
                     }
                 }
-
-                // Kép kirajzolása a Production kijelzőre
                 if (runContext.SourceImage != null && runContext.SourceImage.Ptr != IntPtr.Zero)
                 {
                     Bitmap oldBmp = imageBoxRun.Image as Bitmap;
@@ -235,10 +250,23 @@ namespace FlexVision
                     oldBmp?.Dispose();
                     if (_totalInspected == 0) imageBoxRun.ZoomToFit();
                 }
-                // Részletes táblázat frissítése (Geometry mérések + modul státuszok)
                 UpdateResultsTable(steps);
             }
-            // Statisztika és nagy LED frissítése
+            // Debug gomb állapotának frissítése
+            if (!overallPass && _firstFailedStepIndex >= 0)
+            {
+                btnDebugFail.Enabled = true;
+                btnDebugFail.BackColor = Color.FromArgb(255, 120, 10);
+                btnDebugFail.ForeColor = Color.Black;
+                btnDebugFail.Text = $"🐞 DEBUG STEP #{_firstFailedStepIndex + 1}";
+            }
+            else
+            {
+                btnDebugFail.Enabled = false;
+                btnDebugFail.BackColor = Color_Light;
+                btnDebugFail.ForeColor = Color.Gray;
+                btnDebugFail.Text = "🐞 DEBUG FAILED STEP";
+            }
             _totalInspected++;
             if (overallPass) _passCount++;
             else _failCount++;
@@ -246,6 +274,7 @@ namespace FlexVision
             lblMasterResult.Text = overallPass ? "✅ PASS" : "❌ FAIL";
             lblCycleTime.Text = $"Cycle Time: {totalSw.Elapsed.TotalMilliseconds:F1} ms";
             UpdateStatsUI();
+            return overallPass;
         }
         private void ExecuteStepsRecursive(List<IInspectionModule> steps, InspectionContext currentContext, int startIdx, int maxIdx)
         {
@@ -257,20 +286,10 @@ namespace FlexVision
                 {
                     step.Process(currentContext);
                     sw.Stop();
-                    if (step is BaseInspectionModule bEnd)
-                    {
-                        bEnd.ProcessingTimeMs = sw.Elapsed.TotalMilliseconds;
-                        bEnd.Status = ModuleStatus.Success;
-                    }
-
-                    // Al-kontextus lezárása: nem engedjük tovább a kisképeket a hurok utáni modulokra!
-                    if (currentContext.Parent != null)
-                    {
-                        break;
-                    }
+                    if (step is BaseInspectionModule bEnd) { bEnd.ProcessingTimeMs = sw.Elapsed.TotalMilliseconds; bEnd.Status = ModuleStatus.Success; }
+                    if (currentContext.Parent != null) break;
                     continue;
                 }
-
                 step.Process(currentContext);
                 sw.Stop();
                 if (step is BaseInspectionModule baseMod && !(step is TemplateMatchModule) && !(step is EdgeBasedMatchModule) && !(step is BlobAnalysisModule) && !(step is EdgeCaliperModule) && !(step is GeometryMeasureModule) && !(step is ImageSaveModule))
@@ -293,7 +312,6 @@ namespace FlexVision
                             subContext.GrayHistory[step.Name] = subContext.WorkingMask.Copy();
                         ExecuteStepsRecursive(steps, subContext, i + 1, maxIdx);
                     }
-                    // Hurok végének megkeresése
                     for (int j = i + 1; j < steps.Count; j++)
                     {
                         if (steps[j] is SubPipelineEndModule) { i = j; break; }
@@ -308,7 +326,6 @@ namespace FlexVision
             foreach (var step in steps)
             {
                 if (step is SubPipelineEndModule || step is ImageLoadModule) continue;
-                // Ha GeometryMeasureModule, kilistázzuk az összes kiértékelt méretét!
                 if (step is GeometryMeasureModule geomMod && geomMod.EvaluatedResults != null)
                 {
                     string unit = geomMod.UseMillimeters ? "mm" : "px";
@@ -341,7 +358,7 @@ namespace FlexVision
             lblYieldRate.Text = $"YIELD: {yield:F1} %";
         }
         // ====================================================================
-        // --- MAPPA FUTTATÁS (BATCH FOLDER TEST) ---
+        // --- MAPPA FUTTATÁS (BATCH FOLDER TEST + STOP ON FAIL) ---
         // ====================================================================
         private async void BtnRunFolder_Click(object sender, EventArgs e)
         {
@@ -373,7 +390,12 @@ namespace FlexVision
                     foreach (string file in files)
                     {
                         if (_cts.Token.IsCancellationRequested) break;
-                        ExecuteSingleCycle(file);
+                        bool isPass = ExecuteSingleCycle(file);
+                        // HA BE VAN KAPCSOLVA A STOP ON FAIL ÉS HIBA TÖRTÉNT -> AZONNAL MEGÁLLUNK!
+                        if (!isPass && chkStopOnFail.Checked)
+                        {
+                            break;
+                        }
                         int delay = (int)numDelayMs.Value;
                         if (delay > 0) await Task.Delay(delay, _cts.Token);
                         else Application.DoEvents();
@@ -392,7 +414,7 @@ namespace FlexVision
             }
         }
         // ====================================================================
-        // --- FOLYAMATOS CIKLUS FUTTATÁS (CONTINUOUS LOOP) ---
+        // --- FOLYAMATOS CIKLUS FUTTATÁS (CONTINUOUS LOOP + STOP ON FAIL) ---
         // ====================================================================
         private async void BtnContinuous_Click(object sender, EventArgs e)
         {
@@ -410,7 +432,11 @@ namespace FlexVision
             {
                 while (!_cts.Token.IsCancellationRequested)
                 {
-                    ExecuteSingleCycle();
+                    bool isPass = ExecuteSingleCycle();
+                    if (!isPass && chkStopOnFail.Checked)
+                    {
+                        break;
+                    }
                     int delay = (int)numDelayMs.Value;
                     if (delay > 0) await Task.Delay(delay, _cts.Token);
                     else await Task.Delay(10, _cts.Token);

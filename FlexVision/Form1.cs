@@ -121,8 +121,13 @@ namespace FlexVision
 
             // RUN MODE BELSŐ
             runControl = new ProductionRunControl(pipelineEditor);
+            runControl.OnDebugRequested += (failedStepIndex) =>
+            {
+                // Átváltunk Setup módba (ha van jogosultság), és rögtön az első hibás lépésre ugrunk!
+                BtnSetupMode_Click(null, null);
+                pipelineEditor.JumpToStepAndRun(failedStepIndex);
+            };
             tabRunMode.Controls.Add(runControl);
-
 
 
             // Középre igazítás kényszerítése az első induláskor

@@ -865,6 +865,21 @@ namespace FlexVision
         }
 
 
+        public void JumpToStepAndRun(int stepIndex)
+        {
+            if (PipelineSteps == null || PipelineSteps.Count == 0) return;
+
+            int targetIdx = Math.Max(0, Math.Min(stepIndex, PipelineSteps.Count - 1));
+
+            // Kényszerítjük a kiválasztást, hogy a jobb oldali vezérlőpult is betöltődjön az adott lépéshez
+            listBoxPipeline.SelectedIndex = -1;
+            listBoxPipeline.SelectedIndex = targetIdx;
+
+            RunPipelineDebug();
+            imageBoxExMain.ZoomToFit();
+        }
+
+
         private void ListBoxPipeline_DrawItem(object sender, DrawItemEventArgs e)
         {
             if (e.Index < 0 || PipelineSteps == null || e.Index >= PipelineSteps.Count) return;
