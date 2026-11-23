@@ -53,6 +53,12 @@ namespace FlexVision
         public string CurrentRecipePath { get; set; } = string.Empty;
         public List<IInspectionModule> PipelineSteps { get; private set; } = new List<IInspectionModule>();
 
+        private Panel panelDebugStatusBadge;
+        private Label lblDebugStatusBadge;
+        private bool _anyDebugStepFailed = false;
+        private int _firstDebugFailedStepIndex = -1;
+        private int _firstDebugFailedSubLoopIndex = 0;
+
         public PipelineEditorControl()
         {
             this.BackColor = Color_Bg;
@@ -94,10 +100,13 @@ namespace FlexVision
             btnSave = new Button { Text = "💾 SAVE", Location = new Point(93, 10), Width = 83, Height = 30, FlatStyle = FlatStyle.Flat, ForeColor = Color_Text, BackColor = Color_Light, Font = new Font("Segoe UI", 7.5f, FontStyle.Bold), Cursor = Cursors.Hand };
             btnSave.Click += OnSaveClick;
             btnRunAll = new Button { Text = "▶ RUN", Location = new Point(180, 10), Width = 84, Height = 30, FlatStyle = FlatStyle.Flat, ForeColor = Color.LightGreen, BackColor = Color_Light, Font = new Font("Segoe UI", 7.5f, FontStyle.Bold), Cursor = Cursors.Hand };
-  //          btnRunAll.Click += (s, e) => { if (listBoxPipeline.Items.Count > 0) listBoxPipeline.SelectedIndex = listBoxPipeline.Items.Count - 1; };
+            //          btnRunAll.Click += (s, e) => { if (listBoxPipeline.Items.Count > 0) listBoxPipeline.SelectedIndex = listBoxPipeline.Items.Count - 1; };
             btnRunAll.Click += (s, e) => {
-                // Amikor megnyomják a Run gombot, kényszerítjük a teljes lánc lefutását az utolsó elemig!
                 RunPipelineDebug(stepDirection: 0, runAll: true);
+                if (_anyDebugStepFailed && _firstDebugFailedStepIndex >= 0)
+                {
+                    JumpToStepAndRun(_firstDebugFailedStepIndex, _firstDebugFailedSubLoopIndex);
+                }
             };
 
 
@@ -131,8 +140,32 @@ namespace FlexVision
             splitLeft.Panel1.Controls.Add(listBoxPipeline); splitLeft.Panel1.Controls.Add(pListHeader); splitLeft.Panel1.Controls.Add(panelToolbar); splitLeft.Panel1.Controls.Add(pListButtons);
 
             // KÖZÉPSŐ NAGY KÉP (TE IMAGEBOXEX VEZÉRLŐD)
+ 
+
             Panel pImgHeader = new Panel { Dock = DockStyle.Top, Height = 30, BackColor = Color_Light };
-            pImgHeader.Controls.Add(new Label { Text = "LIVE VIEW DEBUG", ForeColor = Color_Text, Font = new Font("Segoe UI", 8, FontStyle.Bold), Location = new Point(10, 8) });
+            pImgHeader.Controls.Add(new Label { Text = "LIVE VIEW DEBUG", ForeColor = Color_Text, Font = new Font("Segoe UI", 8, FontStyle.Bold), Location = new Point(10, 8), AutoSize = true });
+
+            panelDebugStatusBadge = new Panel
+            {
+                Size = new Size(125, 22),
+                Location = new Point(pImgHeader.Width - 133, 4),
+                Anchor = AnchorStyles.Top | AnchorStyles.Right, // Mindig a jobb szélhez tapad átméretezéskor is!
+                BackColor = Color.FromArgb(45, 45, 45),
+                BorderStyle = BorderStyle.FixedSingle
+            };
+            lblDebugStatusBadge = new Label
+            {
+                Text = "READY",
+                ForeColor = Color.LightGray,
+                Font = new Font("Segoe UI", 8.5f, FontStyle.Bold),
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleCenter
+            };
+            panelDebugStatusBadge.Controls.Add(lblDebugStatusBadge);
+            pImgHeader.Controls.Add(panelDebugStatusBadge);
+
+
+
             imageBoxExMain = new ImageBoxEx { Dock = DockStyle.Fill, BackColor = Color.FromArgb(15, 15, 15), Name = "imageBoxExMain" };
             imageBoxExMain.GridColor = Color.FromArgb(55, 55, 55); imageBoxExMain.GridColorAlternate = Color.FromArgb(45, 45, 45);
             imageBoxExMain.Selected += ImageBoxExMain_SelectionChanged;
@@ -175,6 +208,9 @@ namespace FlexVision
                     }
                 }
             };
+
+
+
 
 
             splitRight.Panel1.Controls.Add(imageBoxExMain); splitRight.Panel1.Controls.Add(pImgHeader);
@@ -282,6 +318,10 @@ namespace FlexVision
             {
                 panelSpecificContainer.Controls.Add(new GeometryMeasureConfigControl(geomMod, imageBoxExMain, () => RunPipelineDebug()));
             }
+            else if (selectedModule is CodeReaderModule codeMod)
+            {
+                panelSpecificContainer.Controls.Add(new CodeReaderConfigControl(codeMod, this, () => RunPipelineDebug()));
+            }
             else
             {
                 Panel pSpecHeader = new Panel { Dock = DockStyle.Top, Height = 25, BackColor = Color_Light };
@@ -371,9 +411,30 @@ namespace FlexVision
             int idx = runAll ? PipelineSteps.Count - 1 : listBoxPipeline.SelectedIndex;
             if (idx < 0) return;
 
+            _anyDebugStepFailed = false;
+            _firstDebugFailedStepIndex = -1;
+
             using (InspectionContext mainContext = new InspectionContext())
             {
                 ExecutePipelineRecursive(mainContext, 0, idx);
+
+                bool isDebugPass = !_anyDebugStepFailed;
+                for (int i = 0; i <= idx; i++)
+                {
+                    if (PipelineSteps[i].Status == ModuleStatus.Failed)
+                    {
+                        isDebugPass = false;
+                        if (_firstDebugFailedStepIndex == -1 || i < _firstDebugFailedStepIndex)
+                            _firstDebugFailedStepIndex = i;
+                    }
+                }
+
+                if (panelDebugStatusBadge != null && lblDebugStatusBadge != null)
+                {
+                    panelDebugStatusBadge.BackColor = isDebugPass ? Color.FromArgb(0, 150, 55) : Color.FromArgb(190, 35, 35);
+                    lblDebugStatusBadge.ForeColor = Color.White;
+                    lblDebugStatusBadge.Text = isDebugPass ? "✔ PASS" : $"✖ FAIL (#{_firstDebugFailedStepIndex + 1})";
+                }
 
                 // ====================================================================
                 // --- 1. SZAKASZ: CIKLUSIDŐ ÖSSZEGZÉS ÉS DIAGNOSZTIKAI JELENTÉS ---
@@ -447,7 +508,7 @@ namespace FlexVision
                     int targetIdx = Math.Min(_activeSubLoopIndex, mainContext.SubContexts.Count - 1);
                     var targetSub = mainContext.SubContexts[targetIdx];
 
-                    if (currentModule is EdgeBasedMatchModule || currentModule is BlobAnalysisModule || currentModule is ColorInRangeModule || currentModule is EdgeCaliperModule || currentModule is GeometryMeasureModule)
+                    if (currentModule is EdgeBasedMatchModule || currentModule is BlobAnalysisModule || currentModule is ColorInRangeModule || currentModule is EdgeCaliperModule || currentModule is GeometryMeasureModule || currentModule is CodeReaderModule)
                     {
                         if (targetSub.SourceImage != null && targetSub.SourceImage.Ptr != IntPtr.Zero)
                             imageBoxExMain.Image = targetSub.SourceImage.ToBitmap();
@@ -460,14 +521,14 @@ namespace FlexVision
                     }
                 }
                 // 2. HA KÍVÜL VAGYUNK A HURKON (PL. 10. GEOMETRY & OVERLAY), A TELJES NAGY KÉPET MUTATJUK!
-                else if (currentModule is TemplateMatchModule || currentModule is BlobAnalysisModule || currentModule is EdgeCaliperModule || currentModule is GeometryMeasureModule || currentModule is ImageSaveModule)
+                else if (currentModule is TemplateMatchModule || currentModule is BlobAnalysisModule || currentModule is EdgeCaliperModule || currentModule is GeometryMeasureModule || currentModule is ImageSaveModule || currentModule is CodeReaderModule)
                 {
                     if (mainContext.SourceImage != null && mainContext.SourceImage.Ptr != IntPtr.Zero)
                         imageBoxExMain.Image = mainContext.SourceImage.ToBitmap();
                 }
                 else
                 {
-                    if (!(currentModule is ImageLoadModule || currentModule is TemplateMatchModule || currentModule is ColorInRangeModule || currentModule is BlobAnalysisModule || currentModule is EdgeCaliperModule || currentModule is GeometryMeasureModule || currentModule is ImageSaveModule) && mainContext.WorkingMask != null && mainContext.WorkingMask.Ptr != IntPtr.Zero)
+                    if (!(currentModule is ImageLoadModule || currentModule is TemplateMatchModule || currentModule is ColorInRangeModule || currentModule is BlobAnalysisModule || currentModule is EdgeCaliperModule || currentModule is GeometryMeasureModule || currentModule is ImageSaveModule || currentModule is CodeReaderModule) && mainContext.WorkingMask != null && mainContext.WorkingMask.Ptr != IntPtr.Zero)
                         imageBoxExMain.Image = mainContext.WorkingMask.ToBitmap();
                     else if (mainContext.SourceImage != null && mainContext.SourceImage.Ptr != IntPtr.Zero)
                         imageBoxExMain.Image = mainContext.SourceImage.ToBitmap();
@@ -540,6 +601,12 @@ namespace FlexVision
                         caliperUi.RefreshResultsFromModule();
                         break;
                     }
+                    else if (ctrl is CodeReaderConfigControl codeUi)
+                    {
+                        codeUi.RefreshResultsFromModule();
+                        break;
+                    }
+
                 }
 
 
@@ -639,7 +706,7 @@ namespace FlexVision
         // ====================================================================
         // --- REKURZÍV PIPELINE VÉGREHAJTÓ MOTOR (NESTED LOOPS ENGINE) ---
         // ====================================================================
-        private void ExecutePipelineRecursive(InspectionContext currentContext, int startIdx, int maxTargetIdx)
+        private void ExecutePipelineRecursive(InspectionContext currentContext, int startIdx, int maxTargetIdx, int currentSubIndex = 0)
         {
             for (int i = startIdx; i <= maxTargetIdx; i++)
             {
@@ -657,8 +724,6 @@ namespace FlexVision
                         bEnd.Status = ModuleStatus.Success;
                     }
 
-                    // KRITIKUS JAVÍTÁS: Ha al-kontextusban (kisképen) vagyunk, ITT AZONNAL KILÉPÜNK A CIKLUSBÓL!
-                    // Így a 12. Geometry és a 13. Save Image NEM fut le 6-szor a kisképeken!
                     if (currentContext.Parent != null)
                     {
                         break;
@@ -666,51 +731,60 @@ namespace FlexVision
                     continue;
                 }
 
-                // 2. FOLYAMATLÉPÉS AUTOMATA VÉGREHAJTÁSA AZ AKTUÁLIS LOKÁLIS AL-KÉPEN
+                // 2. FOLYAMATLÉPÉS AUTOMATA VÉGREHAJTÁSA
                 step.Process(currentContext);
                 sw.Stop();
 
-                // Diagnosztikai idő és státusz beégetése
-                if (step is BaseInspectionModule baseMod && !(step is TemplateMatchModule))
+                if (step is BaseInspectionModule baseMod && baseMod.Status == ModuleStatus.NotExecuted)
                 {
                     baseMod.ProcessingTimeMs = sw.Elapsed.TotalMilliseconds;
                     baseMod.Status = ModuleStatus.Success;
                 }
 
-                // 3. TÖRTÉNELEMMÉNYEK ÉS OVERLAY MENTÉSE HELYBEN (.COPY() MÉLYMÁSOLÁSSAL)
+                // Hiba azonnali rögzítése (lépésindex ÉS a pontos sub-loop sorszám mentése!)
+                if (step.Status == ModuleStatus.Failed)
+                {
+                    _anyDebugStepFailed = true;
+                    if (_firstDebugFailedStepIndex == -1 || i < _firstDebugFailedStepIndex)
+                    {
+                        _firstDebugFailedStepIndex = i;
+                        _firstDebugFailedSubLoopIndex = currentSubIndex;
+                    }
+
+                    InspectionContext root = currentContext;
+                    while (root.Parent != null) root = root.Parent;
+                    root.CustomData["AnyStepFailed"] = true;
+                }
+
+                // 3. TÖRTÉNELEMMÉNYEK MENTÉSE HELYBEN
                 if (currentContext.SourceImage != null && currentContext.SourceImage.Ptr != IntPtr.Zero)
                     currentContext.ColorHistory[step.Name] = currentContext.SourceImage.Copy();
                 if (currentContext.WorkingMask != null && currentContext.WorkingMask.Ptr != IntPtr.Zero)
                     currentContext.GrayHistory[step.Name] = currentContext.WorkingMask.Copy();
 
-                // 4. DINAMIKUS REKURZÍV BEÁGYAZÁSI RETESZ (Nested Loops)
-                // Ha a modul futása során al-kontextusok (SubContexts) keletkeztek (pl. a Template Match talált 4 darabot)
+                // 4. DINAMIKUS REKURZÍV BEÁGYAZÁSI RETESZ
                 if (currentContext.SubContexts != null && currentContext.SubContexts.Count > 0)
                 {
-                    foreach (var subContext in currentContext.SubContexts)
+                    for (int sIdx = 0; sIdx < currentContext.SubContexts.Count; sIdx++)
                     {
+                        var subContext = currentContext.SubContexts[sIdx];
                         subContext.Parent = currentContext;
 
-                        // --- JAVÍTÁS: A kivágott tiszta al-képet regisztráljuk a szülő lépés neve alatt! ---
-                        // Így a hurokban lévő 05. Color Filter pontosan ezt a tiszta al-képet kapja meg,
-                        // ha a "02. Template Matching"-re hivatkozik!
                         if (subContext.SourceImage != null && subContext.SourceImage.Ptr != IntPtr.Zero)
-                        {
                             subContext.ColorHistory[step.Name] = subContext.SourceImage.Copy();
-                        }
                         if (subContext.WorkingMask != null && subContext.WorkingMask.Ptr != IntPtr.Zero)
-                        {
                             subContext.GrayHistory[step.Name] = subContext.WorkingMask.Copy();
-                        }
 
-                        ExecutePipelineRecursive(subContext, i + 1, maxTargetIdx);
+                        // Átadjuk a pontos sIdx sorszámot a rekurziónak!
+                        ExecutePipelineRecursive(subContext, i + 1, maxTargetIdx, sIdx);
                     }
 
                     i = FindSubPipelineEndIndex(i);
                 }
-
             }
         }
+
+
 
         private int FindSubPipelineEndIndex(int currentLoopStartIndex)
         {
@@ -800,8 +874,10 @@ namespace FlexVision
             var mSaveImg = new ToolStripMenuItem("Save Image (Overlay / Raw)") { ForeColor = Color_Text };
             mSaveImg.Click += (s, e) => InsertModuleAtSelected(new ImageSaveModule());
 
+            var mCodeReader = new ToolStripMenuItem("DataMatrix / QR Reader (DPM)") { ForeColor = Color_Text };
+            mCodeReader.Click += (s, e) => InsertModuleAtSelected(new CodeReaderModule());
 
-            catFreq.DropDownItems.AddRange(new ToolStripItem[] { mAdaptive,  mSubRoi, mMatch, mEdgeMatch, blobmod, calipermod , geomMod, mSaveImg });
+            catFreq.DropDownItems.AddRange(new ToolStripItem[] { mAdaptive,  mSubRoi, mMatch, mEdgeMatch, blobmod, calipermod , geomMod, mCodeReader, mSaveImg });
             menuAddModule.Items.AddRange(new ToolStripItem[] { catSpatial, catBlur, catEdges, catMorph, catFreq });
         }
         private void InsertModuleAtSelected(IInspectionModule newModule)
@@ -865,19 +941,26 @@ namespace FlexVision
         }
 
 
-        public void JumpToStepAndRun(int stepIndex)
+        public void JumpToStepAndRun(int stepIndex, int subLoopIndex = 0)
         {
             if (PipelineSteps == null || PipelineSteps.Count == 0) return;
 
             int targetIdx = Math.Max(0, Math.Min(stepIndex, PipelineSteps.Count - 1));
 
-            // Kényszerítjük a kiválasztást, hogy a jobb oldali vezérlőpult is betöltődjön az adott lépéshez
+            // Kiválasztjuk a hibás lépést a listában
             listBoxPipeline.SelectedIndex = -1;
             listBoxPipeline.SelectedIndex = targetIdx;
 
-            RunPipelineDebug();
+            // Ha a hiba egy sub-loop kisképen történt, azonnal arra a kisképre állítjuk a lapozót!
+            if (subLoopIndex > 0)
+            {
+                _activeSubLoopIndex = subLoopIndex;
+                RunPipelineDebug(stepDirection: 0, runAll: false);
+            }
+
             imageBoxExMain.ZoomToFit();
         }
+
 
 
         private void ListBoxPipeline_DrawItem(object sender, DrawItemEventArgs e)
@@ -1247,6 +1330,11 @@ namespace FlexVision
                             caliperMod.ROI = sourceRect;
                             caliperMod.UseROI = true;
                         }
+                        else if (currentMod is CodeReaderModule codeMod)
+                        {
+                            codeMod.ROI = sourceRect;
+                            codeMod.UseROI = true;
+                        }
 
                         // Azonnal újrafuttatjuk a mérést, hogy megjelenjen a szaggatott sárga keret és a szűrt eredmény!
                         RunPipelineDebug();
@@ -1288,6 +1376,7 @@ namespace FlexVision
                 showRoi = true;
             }
             else if (PipelineSteps[idx] is BlobAnalysisModule blobMod && blobMod.UseROI) { activeRoi = blobMod.ROI; showRoi = true; }
+            else if (PipelineSteps[idx] is CodeReaderModule codeMod && codeMod.UseROI) { activeRoi = codeMod.ROI; showRoi = true; }
 
             if (showRoi && activeRoi != Rectangle.Empty && activeRoi.Width > 0 && activeRoi.Height > 0)
             {

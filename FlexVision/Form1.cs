@@ -121,12 +121,12 @@ namespace FlexVision
 
             // RUN MODE BELSŐ
             runControl = new ProductionRunControl(pipelineEditor);
-            runControl.OnDebugRequested += (failedStepIndex) =>
+            runControl.OnDebugRequested += (failedStepIndex, failedSubLoopIndex) =>
             {
-                // Átváltunk Setup módba (ha van jogosultság), és rögtön az első hibás lépésre ugrunk!
                 BtnSetupMode_Click(null, null);
-                pipelineEditor.JumpToStepAndRun(failedStepIndex);
+                pipelineEditor.JumpToStepAndRun(failedStepIndex, failedSubLoopIndex);
             };
+
             tabRunMode.Controls.Add(runControl);
 
 
@@ -170,7 +170,7 @@ namespace FlexVision
                     pipelineEditor.CurrentRecipePath = ofd.FileName;
 
                     pipelineEditor.RefreshUI(forceReloadControls: true);
-                    pipelineEditor.RunPipelineDebug(stepDirection: 0, runAll: true);
+          //          pipelineEditor.RunPipelineDebug(stepDirection: 0, runAll: true);
 
                     string fileNameOnly = System.IO.Path.GetFileNameWithoutExtension(ofd.FileName);
                     lblRecipeName.Text = $"RECIPE: {fileNameOnly.ToUpper()}";

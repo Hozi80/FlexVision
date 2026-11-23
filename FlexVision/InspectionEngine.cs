@@ -33,7 +33,8 @@ namespace FlexVision
         EdgeDetect,
         EdgeBasedMatch,
         TemplateMatch,
-        ColorInrange
+        ColorInrange,
+        CodeReader
     }
 
     // ====================================================================
@@ -259,29 +260,89 @@ namespace FlexVision
         }
     }
     // ====================================================================
-    // --- MÓDOSÍTOTT IMAGE LOAD MODUL ---
+    // --- MÓDOSÍTOTT IMAGE LOAD MODUL (SZÉRIASZÁM KINYERÉSSEL) ---
     // ====================================================================
     [Serializable]
     public class ImageLoadModule : BaseInspectionModule
     {
         [System.ComponentModel.Browsable(false)]
-        public override string PureName => "Source Image Capture"; // Tisztított név sorszám nélkül
+        public override string PureName => "Source Image Capture";
 
         [System.ComponentModel.Browsable(false)]
         public override VisionModuleType ModuleType => VisionModuleType.ImageLoad;
 
-        [Category("Module Specific - Fájl Beállítások"), Description("A vizsgálandó kép abszolút elérési útja.")]
-        public string FilePath { get; set; } = @"C:\Test\boundtest3.bmp";
+        [Category("1. Fájl Beállítások")]
+        [Description("A vizsgálandó kép abszolút elérési útja.")]
+        public string FilePath { get; set; } = @"C:\Test\20260828_0717590380_WP2_WeldingBounding2D_F1_Test_ToolBlock_F1_F2_T55B566570426F097A00164_NOK_Input.bmp";
+
+        [Category("2. Szériaszám Kinyerés (Fájlnévből)")]
+        [Description("Ha igaz, a rendszer a megadott elválasztó és index alapján kinyeri a szériaszámot a fájlnévből.")]
+        public bool ExtractSerialFromFileName { get; set; } = true;
+
+        [Category("2. Szériaszám Kinyerés (Fájlnévből)")]
+        [Description("Elválasztó karakter(ek) a fájlnévben (pl. '_' vagy '-').")]
+        public string SerialSeparator { get; set; } = "_";
+
+        [Category("2. Szériaszám Kinyerés (Fájlnévből)")]
+        [Description("A szériaszám szegmensének sorszáma 0-tól indexelve (pl. 'Termek_SN12345_PASS.bmp' esetén az 1-es index a 'SN12345').")]
+        public int SerialSegmentIndex { get; set; } = 1;
+
+        [Category("3. Diagnosztika"), ReadOnly(true)]
+        [Description("Az utolsó betöltött képből kinyert szériaszám.")]
+        public string ExtractedSerialNumber { get; set; } = "-";
 
         public ImageLoadModule() { }
 
         public override void Process(InspectionContext context)
         {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            this.Status = ModuleStatus.NotExecuted;
+
             if (System.IO.File.Exists(FilePath))
             {
+                context.SourceImage?.Dispose();
                 context.SourceImage = new Image<Bgr, byte>(FilePath);
+
+                context.WorkingMask?.Dispose();
                 context.WorkingMask = context.SourceImage.Convert<Gray, byte>();
+
+                // Szériaszám kinyerése a fájlnévből (kiterjesztés nélkül)
+                this.ExtractedSerialNumber = ParseSerialNumber(FilePath);
+                context.CustomData["SerialNumber"] = this.ExtractedSerialNumber;
+                context.CustomData[this.Name + "_SerialNumber"] = this.ExtractedSerialNumber;
+
+                sw.Stop();
+                this.ProcessingTimeMs = sw.Elapsed.TotalMilliseconds;
+                this.Status = ModuleStatus.Success;
             }
+            else
+            {
+                this.ExtractedSerialNumber = "FILE NOT FOUND";
+                sw.Stop();
+                this.ProcessingTimeMs = sw.Elapsed.TotalMilliseconds;
+                this.Status = ModuleStatus.Failed;
+            }
+        }
+
+        private string ParseSerialNumber(string path)
+        {
+            if (!ExtractSerialFromFileName || string.IsNullOrEmpty(path))
+                return "-";
+
+            string fileNameNoExt = System.IO.Path.GetFileNameWithoutExtension(path);
+            if (string.IsNullOrEmpty(fileNameNoExt))
+                return "-";
+
+            if (string.IsNullOrEmpty(SerialSeparator))
+                return fileNameNoExt;
+
+            string[] parts = fileNameNoExt.Split(new string[] { SerialSeparator }, StringSplitOptions.None);
+            if (SerialSegmentIndex >= 0 && SerialSegmentIndex < parts.Length)
+            {
+                return parts[SerialSegmentIndex].Trim();
+            }
+
+            return "INDEX_OUT_OF_RANGE";
         }
     }
 
@@ -763,11 +824,11 @@ namespace FlexVision
                 context.WorkingMask = binaryMask.Copy();
 
                 // Debug mentés a lemezre ellenőrzéshez
-                binaryMask.Save(@"C:\Test\binarymask.bmp");
+          //      binaryMask.Save(@"C:\Test\binarymask.bmp");
 
                 // Diagnosztikai pixelszámlálás a Console ablakba
-                int pixels = CvInvoke.CountNonZero(binaryMask);
-                Console.WriteLine($"Active ColorSpace: {ActiveColorSpace} | Inverted: {IsInverted} | Real Mask pixels: {pixels}");
+        //        int pixels = CvInvoke.CountNonZero(binaryMask);
+                Console.WriteLine($"Active ColorSpace: {ActiveColorSpace} | Inverted: {IsInverted}");
 
                 // ====================================================================
                 // --- JAVÍTÁS: ÚJ KIMENETI STRATÉGIA VÁLASZTÓ REKESZ ---

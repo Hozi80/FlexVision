@@ -45,9 +45,12 @@ namespace FlexVision
         private int _failCount = 0;
         private int _firstFailedStepIndex = -1;
         private CancellationTokenSource _cts = null;
+        private int _subFailedSubLoopIndex = 0;
+        public event Action<int, int> OnDebugRequested; // (stepIndex, subLoopIndex)
+        private Dictionary<IInspectionModule, bool> _stepAnyFailedMap = new Dictionary<IInspectionModule, bool>();
 
-        // Esemény a főablaknak a Setup módba való ugráshoz (átadja az első hibás lépés indexét)
-        public event Action<int> OnDebugRequested;
+        private Label lblSerialNumber;
+
 
         public ProductionRunControl(PipelineEditorControl editorRef)
         {
@@ -122,48 +125,58 @@ namespace FlexVision
                 Text = "Cycle Time: 0.0 ms",
                 ForeColor = Color_Cyan,
                 Font = new Font("Segoe UI", 10f, FontStyle.Bold),
-                Location = new Point(12, 100),
+                Location = new Point(12, 98),
                 AutoSize = true
             };
 
+            lblSerialNumber = new Label
+            {
+                Text = "SN: -",
+                ForeColor = Color.Gold,
+                Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
+                Location = new Point(12, 122),
+                Size = new Size(360, 22),
+                AutoEllipsis = true
+            };
+
             // 2. VEZÉRLŐ GOMBOK
-            btnSingleTrigger = CreateBtn("⚡ SINGLE TRIGGER", 12, 128, 360, 40, Color.LimeGreen, Color.Black);
+            btnSingleTrigger = CreateBtn("⚡ SINGLE TRIGGER", 12, 152, 360, 40, Color.LimeGreen, Color.Black);
             btnSingleTrigger.Click += (s, e) => ExecuteSingleCycle();
 
-            btnRunFolder = CreateBtn("📂 RUN FOLDER (BATCH TEST)", 12, 175, 360, 36, Color_Cyan, Color.Black);
+            btnRunFolder = CreateBtn("📂 RUN FOLDER (BATCH TEST)", 12, 199, 360, 36, Color_Cyan, Color.Black);
             btnRunFolder.Click += BtnRunFolder_Click;
 
-            btnContinuous = CreateBtn("🔄 START CONTINUOUS LOOP", 12, 218, 230, 36, Color_Light, Color.White);
+            btnContinuous = CreateBtn("🔄 START CONTINUOUS LOOP", 12, 242, 230, 36, Color_Light, Color.White);
             btnContinuous.Click += BtnContinuous_Click;
 
-            Label lblDelay = new Label { Text = "Delay (ms):", ForeColor = Color_Text, Location = new Point(250, 227), AutoSize = true, Font = new Font("Segoe UI", 8f) };
-            numDelayMs = new NumericUpDown { Location = new Point(312, 224), Width = 60, Minimum = 0, Maximum = 5000, Value = 150, BackColor = Color_Light, ForeColor = Color_Text, BorderStyle = BorderStyle.FixedSingle };
+            Label lblDelay = new Label { Text = "Delay (ms):", ForeColor = Color_Text, Location = new Point(250, 251), AutoSize = true, Font = new Font("Segoe UI", 8f) };
+            numDelayMs = new NumericUpDown { Location = new Point(312, 248), Width = 60, Minimum = 0, Maximum = 5000, Value = 150, BackColor = Color_Light, ForeColor = Color_Text, BorderStyle = BorderStyle.FixedSingle };
 
-            // --- ÚJ: STOP ON FAIL ÉS DEBUG GOMB SÁV ---
+            // STOP ON FAIL ÉS DEBUG GOMB SÁV
             chkStopOnFail = new CheckBox
             {
                 Text = "🛑 Stop on Fail",
                 ForeColor = Color.Orange,
-                Location = new Point(12, 265),
+                Location = new Point(12, 289),
                 AutoSize = true,
                 Checked = true,
                 Font = new Font("Segoe UI", 9f, FontStyle.Bold)
             };
 
-            btnDebugFail = CreateBtn("🐞 DEBUG FAILED STEP", 145, 261, 227, 32, Color_Light, Color.Gray);
+            btnDebugFail = CreateBtn("🐞 DEBUG FAILED STEP", 145, 285, 227, 32, Color_Light, Color.Gray);
             btnDebugFail.Enabled = false;
             btnDebugFail.Click += (s, e) =>
             {
                 if (_firstFailedStepIndex >= 0)
                 {
-                    OnDebugRequested?.Invoke(_firstFailedStepIndex);
+                    OnDebugRequested?.Invoke(_firstFailedStepIndex, _subFailedSubLoopIndex);
                 }
             };
 
             // 3. GYÁRTÁSI STATISZTIKA PANEL
             Panel panelStats = new Panel
             {
-                Location = new Point(12, 304),
+                Location = new Point(12, 328),
                 Size = new Size(360, 105),
                 BackColor = Color_Bg,
                 BorderStyle = BorderStyle.FixedSingle
@@ -185,12 +198,12 @@ namespace FlexVision
             panelStats.Controls.AddRange(new Control[] { lblTotalCount, lblPassCount, lblFailCount, lblYieldRate, btnResetStats });
 
             // 4. MÉRÉSI EREDMÉNYEK TÁBLÁZAT
-            Label lblTableTitle = new Label { Text = "CURRENT CYCLE MEASUREMENTS", ForeColor = Color_Cyan, Font = new Font("Segoe UI", 8.5f, FontStyle.Bold), Location = new Point(12, 420), AutoSize = true };
+            Label lblTableTitle = new Label { Text = "CURRENT CYCLE MEASUREMENTS", ForeColor = Color_Cyan, Font = new Font("Segoe UI", 8.5f, FontStyle.Bold), Location = new Point(12, 444), AutoSize = true };
 
             listViewRunResults = new ListView
             {
-                Location = new Point(12, 442),
-                Size = new Size(360, 250),
+                Location = new Point(12, 466),
+                Size = new Size(360, 530),
                 BackColor = Color_Bg,
                 ForeColor = Color_Text,
                 BorderStyle = BorderStyle.FixedSingle,
@@ -199,59 +212,94 @@ namespace FlexVision
                 GridLines = true,
                 Font = new Font("Segoe UI", 8.5f)
             };
-            listViewRunResults.Columns.Add("Step / Measure", 145);
-            listViewRunResults.Columns.Add("Value", 115, HorizontalAlignment.Right);
+            listViewRunResults.Columns.Add("Step / Measure", 160);
+            listViewRunResults.Columns.Add("Value", 100, HorizontalAlignment.Center);
             listViewRunResults.Columns.Add("Result", 85, HorizontalAlignment.Center);
 
             rightPanel.Controls.AddRange(new Control[] {
-                panelMasterStatus, lblCycleTime,
-                btnSingleTrigger, btnRunFolder, btnContinuous, lblDelay, numDelayMs,
-                chkStopOnFail, btnDebugFail,
-                panelStats, lblTableTitle, listViewRunResults
-            });
+        panelMasterStatus, lblCycleTime, lblSerialNumber,
+        btnSingleTrigger, btnRunFolder, btnContinuous, lblDelay, numDelayMs,
+        chkStopOnFail, btnDebugFail,
+        panelStats, lblTableTitle, listViewRunResults
+    });
 
             this.Controls.Add(splitMain);
         }
 
+
         // ====================================================================
         // --- EGYETLEN CIKLUS VÉGREHAJTÁSA (CORE RUN ENGINE) ---
         // ====================================================================
+        private bool _anySubStepFailed = false;
+        private int _subFailedStepIndex = -1;
+
         public bool ExecuteSingleCycle(string overrideImagePath = null)
         {
             var steps = _editorRef?.PipelineSteps;
             if (steps == null || steps.Count == 0) return true;
+            ReceptRegistry.ActiveSteps = steps; // Mindig az aktuális futó listát látja az ImageSaveModule!
 
-            // Ha mappából futtatunk (Batch), átírjuk az első ImageLoadModule elérési útját
-            // (Így ha hibára fut, a Setup mód is pontosan ezt a hibás képet fogja betölteni!)
-            if (!string.IsNullOrEmpty(overrideImagePath) && steps.Count > 0 && steps.FirstOrDefault() is ImageLoadModule loadMod)
+            if (!string.IsNullOrEmpty(overrideImagePath) && steps.FirstOrDefault() is ImageLoadModule loadMod)
             {
                 loadMod.FilePath = overrideImagePath;
             }
+
             var totalSw = System.Diagnostics.Stopwatch.StartNew();
             bool overallPass = true;
             _firstFailedStepIndex = -1;
+            _anySubStepFailed = false;
+            _subFailedStepIndex = -1;
+            _subFailedSubLoopIndex = 0;
+            _stepAnyFailedMap.Clear(); // Minden új ciklus elején töröljük az előző kör hibalistáját!
+            string currentSn = "-";
+
             using (InspectionContext runContext = new InspectionContext())
             {
                 ExecuteStepsRecursive(steps, runContext, 0, steps.Count - 1);
                 totalSw.Stop();
-                // Megkeressük az első hibás lépést a listában
+
+                // Kiolvassuk a kinyert szériaszámot a kontextusból vagy a képbetöltő modulból
+                if (runContext.CustomData != null && runContext.CustomData.TryGetValue("SerialNumber", out object snObj) && snObj != null)
+                {
+                    currentSn = snObj.ToString();
+                }
+                else if (steps.FirstOrDefault() is ImageLoadModule imgLoad && !string.IsNullOrEmpty(imgLoad.ExtractedSerialNumber))
+                {
+                    currentSn = imgLoad.ExtractedSerialNumber;
+                }
+
+                // 1. Ha bármelyik al-pipeline iterációban hiba történt, rögzítjük!
+                if (_anySubStepFailed)
+                {
+                    overallPass = false;
+                    _firstFailedStepIndex = _subFailedStepIndex;
+                }
+
+                // 2. Megnézzük a főág lépéseinek státuszát is
                 for (int i = 0; i < steps.Count; i++)
                 {
                     if (steps[i].Status == ModuleStatus.Failed)
                     {
                         overallPass = false;
-                        if (_firstFailedStepIndex == -1) _firstFailedStepIndex = i;
+                        if (_firstFailedStepIndex == -1 || i < _firstFailedStepIndex)
+                        {
+                            _firstFailedStepIndex = i;
+                        }
                     }
                 }
+
                 if (runContext.SourceImage != null && runContext.SourceImage.Ptr != IntPtr.Zero)
                 {
                     Bitmap oldBmp = imageBoxRun.Image as Bitmap;
                     imageBoxRun.Image = runContext.SourceImage.ToBitmap();
                     oldBmp?.Dispose();
+
                     if (_totalInspected == 0) imageBoxRun.ZoomToFit();
                 }
+
                 UpdateResultsTable(steps);
             }
+
             // Debug gomb állapotának frissítése
             if (!overallPass && _firstFailedStepIndex >= 0)
             {
@@ -267,21 +315,28 @@ namespace FlexVision
                 btnDebugFail.ForeColor = Color.Gray;
                 btnDebugFail.Text = "🐞 DEBUG FAILED STEP";
             }
+
             _totalInspected++;
             if (overallPass) _passCount++;
             else _failCount++;
+
             panelMasterStatus.BackColor = overallPass ? Color.FromArgb(0, 160, 60) : Color.FromArgb(200, 35, 35);
             lblMasterResult.Text = overallPass ? "✅ PASS" : "❌ FAIL";
             lblCycleTime.Text = $"Cycle Time: {totalSw.Elapsed.TotalMilliseconds:F1} ms";
+            if (lblSerialNumber != null) lblSerialNumber.Text = $"SN: {currentSn}";
             UpdateStatsUI();
+
             return overallPass;
         }
-        private void ExecuteStepsRecursive(List<IInspectionModule> steps, InspectionContext currentContext, int startIdx, int maxIdx)
+
+
+        private void ExecuteStepsRecursive(List<IInspectionModule> steps, InspectionContext currentContext, int startIdx, int maxIdx, int currentSubIndex = 0)
         {
             for (int i = startIdx; i <= maxIdx; i++)
             {
                 IInspectionModule step = steps[i];
                 var sw = System.Diagnostics.Stopwatch.StartNew();
+
                 if (step is SubPipelineEndModule)
                 {
                     step.Process(currentContext);
@@ -290,28 +345,51 @@ namespace FlexVision
                     if (currentContext.Parent != null) break;
                     continue;
                 }
+
                 step.Process(currentContext);
                 sw.Stop();
-                if (step is BaseInspectionModule baseMod && !(step is TemplateMatchModule) && !(step is EdgeBasedMatchModule) && !(step is BlobAnalysisModule) && !(step is EdgeCaliperModule) && !(step is GeometryMeasureModule) && !(step is ImageSaveModule))
+
+                // CSAK akkor állítjuk Success-re, ha a modul nem állított be saját státuszt (pl. egyszerű szűrők)!
+                if (step is BaseInspectionModule baseMod && baseMod.Status == ModuleStatus.NotExecuted)
                 {
                     baseMod.ProcessingTimeMs = sw.Elapsed.TotalMilliseconds;
                     baseMod.Status = ModuleStatus.Success;
                 }
+
+                if (step.Status == ModuleStatus.Failed)
+                {
+                    _stepAnyFailedMap[step] = true; // Rögzítjük a lépés hibáját a táblázathoz is!
+                    _anySubStepFailed = true;
+                    if (_subFailedStepIndex == -1 || i < _subFailedStepIndex)
+                    {
+                        _subFailedStepIndex = i;
+                        _subFailedSubLoopIndex = currentSubIndex;
+                    }
+
+                    InspectionContext root = currentContext;
+                    while (root.Parent != null) root = root.Parent;
+                    root.CustomData["AnyStepFailed"] = true;
+                }
+
                 if (currentContext.SourceImage != null && currentContext.SourceImage.Ptr != IntPtr.Zero)
                     currentContext.ColorHistory[step.Name] = currentContext.SourceImage.Copy();
                 if (currentContext.WorkingMask != null && currentContext.WorkingMask.Ptr != IntPtr.Zero)
                     currentContext.GrayHistory[step.Name] = currentContext.WorkingMask.Copy();
+
                 if (currentContext.SubContexts != null && currentContext.SubContexts.Count > 0)
                 {
-                    foreach (var subContext in currentContext.SubContexts)
+                    for (int sIdx = 0; sIdx < currentContext.SubContexts.Count; sIdx++)
                     {
+                        var subContext = currentContext.SubContexts[sIdx];
                         subContext.Parent = currentContext;
                         if (subContext.SourceImage != null && subContext.SourceImage.Ptr != IntPtr.Zero)
                             subContext.ColorHistory[step.Name] = subContext.SourceImage.Copy();
                         if (subContext.WorkingMask != null && subContext.WorkingMask.Ptr != IntPtr.Zero)
                             subContext.GrayHistory[step.Name] = subContext.WorkingMask.Copy();
-                        ExecuteStepsRecursive(steps, subContext, i + 1, maxIdx);
+
+                        ExecuteStepsRecursive(steps, subContext, i + 1, maxIdx, sIdx);
                     }
+
                     for (int j = i + 1; j < steps.Count; j++)
                     {
                         if (steps[j] is SubPipelineEndModule) { i = j; break; }
@@ -319,13 +397,15 @@ namespace FlexVision
                 }
             }
         }
+
+
         private void UpdateResultsTable(List<IInspectionModule> steps)
         {
             listViewRunResults.BeginUpdate();
             listViewRunResults.Items.Clear();
             foreach (var step in steps)
             {
-                if (step is SubPipelineEndModule || step is ImageLoadModule) continue;
+                if (step is SubPipelineEndModule ) continue;
                 if (step is GeometryMeasureModule geomMod && geomMod.EvaluatedResults != null)
                 {
                     string unit = geomMod.UseMillimeters ? "mm" : "px";
@@ -340,12 +420,16 @@ namespace FlexVision
                 }
                 else
                 {
+                    bool isStepFailed = (step.Status == ModuleStatus.Failed) ||
+                                        (_stepAnyFailedMap.ContainsKey(step) && _stepAnyFailedMap[step]);
+
                     ListViewItem item = new ListViewItem(step.Name);
                     item.SubItems.Add($"{step.ProcessingTimeMs:F1} ms");
-                    item.SubItems.Add(step.Status.ToString().ToUpper());
-                    item.ForeColor = (step.Status == ModuleStatus.Failed) ? Color.Tomato : Color.White;
+                    item.SubItems.Add(isStepFailed ? "FAILED" : "SUCCESS");
+                    item.ForeColor = isStepFailed ? Color.Tomato : Color.White;
                     listViewRunResults.Items.Add(item);
                 }
+
             }
             listViewRunResults.EndUpdate();
         }

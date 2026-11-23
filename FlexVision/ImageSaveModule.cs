@@ -40,6 +40,10 @@ namespace FlexVision
         public string FilePrefix { get; set; } = "Result";
 
         [Category("1. Mentési Beállítások")]
+        [Description("Ha igaz, beilleszti az ImageLoad által kinyert szériaszámot a fájlnévbe.")]
+        public bool IncludeSerialNumber { get; set; } = true;
+
+        [Category("1. Mentési Beállítások")]
         [Description("Ha igaz, dátumot és pontos időt (ezredmásodperccel) fűz a fájlnévhez.")]
         public bool AppendTimestamp { get; set; } = true;
 
@@ -75,8 +79,17 @@ namespace FlexVision
                 }
 
                 // 2. Feltétel ellenőrzése (PASS / FAIL státusz az előző lépések alapján)
+                // 2. Feltétel ellenőrzése (főág + al-hurkok összesített PASS / FAIL státusza alapján)
                 bool pipelineOk = true;
-                if (ReceptRegistry.ActiveSteps != null)
+
+                // Ha a futtató motor rögzített bármilyen al-hurok hibát a kontextusban:
+                if (context.CustomData != null && context.CustomData.TryGetValue("AnyStepFailed", out object failObj) && failObj is bool anyFailed && anyFailed)
+                {
+                    pipelineOk = false;
+                }
+
+                // Ellenőrizzük a főág lépéseinek státuszát is
+                if (pipelineOk && ReceptRegistry.ActiveSteps != null)
                 {
                     foreach (var step in ReceptRegistry.ActiveSteps)
                     {
@@ -88,6 +101,7 @@ namespace FlexVision
                         }
                     }
                 }
+
 
                 if (this.Condition == SaveConditionMode.OnlyPass && !pipelineOk)
                 {
@@ -137,16 +151,30 @@ namespace FlexVision
                         }
                     }
 
-                    // 5. Mappa létrehozása és fájl mentése
+                    // 5. Mappa létrehozása és fájlnév összeállítása (szériaszámmal)
                     if (!Directory.Exists(this.OutputFolder))
                     {
                         Directory.CreateDirectory(this.OutputFolder);
                     }
 
+                    string serialPart = "";
+                    if (this.IncludeSerialNumber && context.CustomData != null && context.CustomData.TryGetValue("SerialNumber", out object snObj))
+                    {
+                        string rawSn = snObj?.ToString() ?? "";
+                        if (!string.IsNullOrWhiteSpace(rawSn) && rawSn != "-" && rawSn != "FILE NOT FOUND" && rawSn != "INDEX_OUT_OF_RANGE")
+                        {
+                            string safeSn = SanitizeFileName(rawSn);
+                            if (!string.IsNullOrEmpty(safeSn))
+                            {
+                                serialPart = $"_{safeSn}";
+                            }
+                        }
+                    }
+
                     string ext = this.Format.ToString().ToLower();
                     string statusTag = pipelineOk ? "PASS" : "FAIL";
-                    string timestamp = this.AppendTimestamp ? $"_{DateTime.Now:yyyyMMdd_HHmmss_fff}_{statusTag}" : "";
-                    string fileName = $"{this.FilePrefix}{timestamp}.{ext}";
+                    string timestamp = this.AppendTimestamp ? $"_{DateTime.Now:yyyyMMdd_HHmmss_fff}_{statusTag}" : $"_{statusTag}";
+                    string fileName = $"{this.FilePrefix}{serialPart}{timestamp}.{ext}";
                     string fullPath = Path.Combine(this.OutputFolder, fileName);
 
                     imgToSave.Save(fullPath);
@@ -166,6 +194,15 @@ namespace FlexVision
             {
                 this.ProcessingTimeMs = sw.Elapsed.TotalMilliseconds;
             }
+        }
+
+        private string SanitizeFileName(string name)
+        {
+            foreach (char c in Path.GetInvalidFileNameChars())
+            {
+                name = name.Replace(c, '_');
+            }
+            return name;
         }
     }
 }

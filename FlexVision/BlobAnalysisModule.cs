@@ -15,6 +15,8 @@ namespace FlexVision
         public int Index { get; set; }
         public double Area { get; set; }
         public double Circularity { get; set; }
+        public double AspectRatio { get; set; }
+        public double Perimeter { get; set; }
         public PointF Center { get; set; }
         public Rectangle BoundingBox { get; set; }
     }
@@ -38,39 +40,55 @@ namespace FlexVision
         public Rectangle ROI { get; set; } = Rectangle.Empty;
 
         [Category("2. Folt Szűrési Feltételek")]
-        [Description("Ha igaz, fehér (világos) foltokat keres.")]
         public bool SearchWhiteBlobs { get; set; } = true;
 
         [Category("2. Folt Szűrési Feltételek")]
-        [Description("Ha igaz, fekete (sötét) foltokat keres.")]
         public bool SearchBlackBlobs { get; set; } = true;
 
-
+        // Area (Mindig aktív alapszűrő)
         [Category("2. Folt Szűrési Feltételek")]
-        [Description("Minimális terület pixelben. Az ennél kisebb zajfoltokat eldobja.")]
         public double MinArea { get; set; } = 100.0;
 
         [Category("2. Folt Szűrési Feltételek")]
-        [Description("Maximális terület pixelben. Az ennél nagyobb háttérfoltokat eldobja.")]
         public double MaxArea { get; set; } = 500000.0;
 
+        // Circularity (Kapcsolható)
         [Category("2. Folt Szűrési Feltételek")]
-        [Description("Minimális körszerűség (0.0 - 1.0 között, ahol 1.0 a tökéletes kör).")]
+        public bool UseCircularityFilter { get; set; } = false;
+
+        [Category("2. Folt Szűrési Feltételek")]
         public double MinCircularity { get; set; } = 0.0;
 
         [Category("2. Folt Szűrési Feltételek")]
-        [Description("Maximális körszerűség (0.0 - 1.0 között).")]
         public double MaxCircularity { get; set; } = 1.0;
 
+        // Aspect Ratio (Kapcsolható: Szélesség / Magasság)
+        [Category("2. Folt Szűrési Feltételek")]
+        public bool UseAspectRatioFilter { get; set; } = false;
+
+        [Category("2. Folt Szűrési Feltételek")]
+        public double MinAspectRatio { get; set; } = 0.0;
+
+        [Category("2. Folt Szűrési Feltételek")]
+        public double MaxAspectRatio { get; set; } = 100.0;
+
+        // Perimeter (Kapcsolható: Kerület px)
+        [Category("2. Folt Szűrési Feltételek")]
+        public bool UsePerimeterFilter { get; set; } = false;
+
+        [Category("2. Folt Szűrési Feltételek")]
+        public double MinPerimeter { get; set; } = 0.0;
+
+        [Category("2. Folt Szűrési Feltételek")]
+        public double MaxPerimeter { get; set; } = 100000.0;
+
         [Category("3. Minőségellenőrzés és Hurok")]
-        [Description("Elvárt darabszám a PASS státuszhoz.")]
         public int ExpectedBlobCount { get; set; } = 1;
 
         [Category("3. Minőségellenőrzés és Hurok")]
-        [Description("Ha igaz, minden megtalált folt köré kivág egy al-képet a következő lépéseknek.")]
         public bool CreateSubContexts { get; set; } = false;
 
-        // --- KIMENETI DIAGNOSZTIKAI RIAPORTOK (READ-ONLY) ---
+        // --- KIMENETI DIAGNOSZTIKAI RIAPORTOK ---
         [Category("4. Mérési Eredmények"), ReadOnly(true)]
         public string ExecutionTime { get; set; } = "0 ms";
 
@@ -97,7 +115,6 @@ namespace FlexVision
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
             this.Status = ModuleStatus.NotExecuted;
 
-            // 1. Szürkeárnyalatos maszk lekérése (ha nincs, konvertáljuk a színes képből)
             Image<Gray, byte> inputMask = context.GetInputGrayImage(this.InputStepLink);
             if (inputMask == null)
             {
@@ -116,7 +133,6 @@ namespace FlexVision
                 return;
             }
 
-            // Színes kimeneti kép előkészítése az overlay rajzoláshoz
             Image<Bgr, byte> baseColor = context.GetInputColorImage(this.InputStepLink);
             Image<Bgr, byte> overlayOutput = baseColor != null ? baseColor.Copy() : inputMask.Convert<Bgr, byte>();
             baseColor?.Dispose();
@@ -125,7 +141,6 @@ namespace FlexVision
 
             try
             {
-                // 2. ROI (Keresési terület) előkészítése
                 Rectangle activeArea = new Rectangle(0, 0, inputMask.Width, inputMask.Height);
                 bool isRoiActive = this.UseROI && this.ROI != Rectangle.Empty && this.ROI.Width > 5 && this.ROI.Height > 5;
 
@@ -136,13 +151,11 @@ namespace FlexVision
 
                 inputMask.ROI = activeArea;
 
-                // 3. Kontúrkeresés (Emgu CV VectorOfVectorOfPoint)
                 using (Image<Gray, byte> workingCopy = inputMask.Copy())
                 using (VectorOfVectorOfPoint contours = new VectorOfVectorOfPoint())
                 using (Mat hierarchy = new Mat())
                 {
-                    inputMask.ROI = Rectangle.Empty; // Visszaállítjuk a maszkot
-             //       workingCopy.Save(@"C:\test\blob.jpg");
+                    inputMask.ROI = Rectangle.Empty;
                     CvInvoke.FindContours(workingCopy, contours, hierarchy, RetrType.List, ChainApproxMethod.ChainApproxSimple);
 
                     int blobIdx = 1;
@@ -150,42 +163,59 @@ namespace FlexVision
                     {
                         using (VectorOfPoint contour = contours[i])
                         {
+                            // 1. TERÜLET SZŰRÉS (Mindig aktív)
                             double area = CvInvoke.ContourArea(contour);
-
-                            // Területszűrés
                             if (area < this.MinArea || area > this.MaxArea) continue;
 
-                            double perimeter = CvInvoke.ArcLength(contour, true);
-                            double circularity = (perimeter > 0) ? (4.0 * Math.PI * area) / (perimeter * perimeter) : 0.0;
-                            circularity = Math.Min(1.0, circularity); // Numerikus pontatlanság levágása
-
-                            // Körszerűség szűrés
-                            if (circularity < this.MinCircularity || circularity > this.MaxCircularity) continue;
-
-                            // --- SZÍN (POLARITÁS) SZŰRÉS: FEHÉR, FEKETE VAGY MINDKETTŐ ---
-                            using (Image<Gray, byte> tempContourMask = new Image<Gray, byte>(workingCopy.Size))
+                            // 2. OLDALARÁNY (ASPECT RATIO) SZŰRÉS (Opcionális)
+                            Rectangle localRect = CvInvoke.BoundingRectangle(contour);
+                            double aspectRatio = localRect.Height > 0 ? (double)localRect.Width / localRect.Height : 0.0;
+                            if (this.UseAspectRatioFilter)
                             {
-                                tempContourMask.SetZero();
-                                CvInvoke.DrawContours(tempContourMask, contours, i, new MCvScalar(255), -1);
-
-                                // Kiszámoljuk a kontúr belsejének átlagos fényerejét az eredeti maszkon
-                                MCvScalar meanIntensity = CvInvoke.Mean(workingCopy, tempContourMask);
-                                bool isWhite = meanIntensity.V0 >= 128;
-                                bool isBlack = meanIntensity.V0 < 128;
-
-                                // Ha fehér, de a White nincs bepipálva, vagy ha fekete, de a Black nincs bepipálva -> eldobás
-                                if (isWhite && !this.SearchWhiteBlobs) continue;
-                                if (isBlack && !this.SearchBlackBlobs) continue;
+                                if (aspectRatio < this.MinAspectRatio || aspectRatio > this.MaxAspectRatio) continue;
                             }
 
-                            // Súlypont számítása Momentumokkal
+                            // 3. KERÜLET ÉS KÖRSZERŰSÉG SZŰRÉS (Csak akkor számoljuk az ArcLength-t, ha legalább az egyik aktív!)
+                            double perimeter = 0.0;
+                            double circularity = 0.0;
+                            if (this.UsePerimeterFilter || this.UseCircularityFilter)
+                            {
+                                perimeter = CvInvoke.ArcLength(contour, true);
+                                if (this.UsePerimeterFilter)
+                                {
+                                    if (perimeter < this.MinPerimeter || perimeter > this.MaxPerimeter) continue;
+                                }
+
+                                if (this.UseCircularityFilter)
+                                {
+                                    circularity = (perimeter > 0) ? Math.Min(1.0, (4.0 * Math.PI * area) / (perimeter * perimeter)) : 0.0;
+                                    if (circularity < this.MinCircularity || circularity > this.MaxCircularity) continue;
+                                }
+                            }
+
+                            // 4. SZÍN (POLARITÁS) SZŰRÉS (Csak ha nem mindkettő engedélyezett)
+                            if (!this.SearchWhiteBlobs || !this.SearchBlackBlobs)
+                            {
+                                using (Image<Gray, byte> tempContourMask = new Image<Gray, byte>(workingCopy.Size))
+                                {
+                                    tempContourMask.SetZero();
+                                    CvInvoke.DrawContours(tempContourMask, contours, i, new MCvScalar(255), -1);
+
+                                    MCvScalar meanIntensity = CvInvoke.Mean(workingCopy, tempContourMask);
+                                    bool isWhite = meanIntensity.V0 >= 128;
+                                    bool isBlack = meanIntensity.V0 < 128;
+
+                                    if (isWhite && !this.SearchWhiteBlobs) continue;
+                                    if (isBlack && !this.SearchBlackBlobs) continue;
+                                }
+                            }
+
+                            // 5. SÚLYPONT ÉS POZÍCIÓ RÖGZÍTÉSE
                             Moments moments = CvInvoke.Moments(contour);
                             float cx = moments.M00 != 0 ? (float)(moments.M10 / moments.M00) : 0f;
                             float cy = moments.M00 != 0 ? (float)(moments.M01 / moments.M00) : 0f;
 
-                            // Eltolás visszaállítása a teljes kép koordinátáira
                             PointF globalCenter = new PointF(cx + activeArea.X, cy + activeArea.Y);
-                            Rectangle localRect = CvInvoke.BoundingRectangle(contour);
                             Rectangle globalRect = new Rectangle(
                                 localRect.X + activeArea.X,
                                 localRect.Y + activeArea.Y,
@@ -193,59 +223,56 @@ namespace FlexVision
                                 localRect.Height
                             );
 
+                            // Ha a diagnosztikai listába a kerület/körszerűség még nem volt kiszámolva, a megtartott kevés találatra kiszámoljuk
+                            if (perimeter == 0.0)
+                            {
+                                perimeter = CvInvoke.ArcLength(contour, true);
+                                circularity = (perimeter > 0) ? Math.Min(1.0, (4.0 * Math.PI * area) / (perimeter * perimeter)) : 0.0;
+                            }
                             validBlobs.Add(new BlobResult
                             {
                                 Index = blobIdx,
                                 Area = area,
                                 Circularity = circularity,
+                                AspectRatio = aspectRatio,
+                                Perimeter = perimeter,
                                 Center = globalCenter,
                                 BoundingBox = globalRect
                             });
-
-                            // Vizuális overlay rajzolása (Kontúr, Befoglaló keret, Súlypont szálkereszt)
+                            // Overlay rajzolás
                             Point[] shiftedPoints = new Point[contour.Size];
                             for (int p = 0; p < contour.Size; p++)
                             {
                                 shiftedPoints[p] = new Point(contour[p].X + activeArea.X, contour[p].Y + activeArea.Y);
                             }
-
                             using (VectorOfPoint shiftedContour = new VectorOfPoint(shiftedPoints))
                             {
                                 CvInvoke.Polylines(overlayOutput, shiftedContour, true, new MCvScalar(0, 255, 0), 2);
                             }
-
                             CvInvoke.Rectangle(overlayOutput, globalRect, new MCvScalar(255, 200, 0), 1);
                             Point centerPt = Point.Round(globalCenter);
                             CvInvoke.Line(overlayOutput, new Point(centerPt.X - 6, centerPt.Y), new Point(centerPt.X + 6, centerPt.Y), new MCvScalar(0, 0, 255), 2);
                             CvInvoke.Line(overlayOutput, new Point(centerPt.X, centerPt.Y - 6), new Point(centerPt.X, centerPt.Y + 6), new MCvScalar(0, 0, 255), 2);
-
-
-                            // Súlypont rögzítése
-                            string featKey = $"{this.EffectiveFeatureName}_Blob_{blobIdx}";
+                            // Feature Store mentés (Súlypont + 4 oldalvonal)
+                            string featKey = $"{this.EffectiveFeatureName}Blob{blobIdx}";
                             context.Features[featKey] = new PointFeature(featKey, this.Name, globalCenter);
-
-                            // Befoglaló keret (Bounding Box) 4 oldalának rögzítése külön LineFeature-ként
                             PointF tl = new PointF(globalRect.Left, globalRect.Top);
                             PointF tr = new PointF(globalRect.Right, globalRect.Top);
                             PointF br = new PointF(globalRect.Right, globalRect.Bottom);
                             PointF bl = new PointF(globalRect.Left, globalRect.Bottom);
-
                             context.Features[$"{featKey}_Top"] = new LineFeature($"{featKey}_Top", this.Name, tl, tr);
                             context.Features[$"{featKey}_Right"] = new LineFeature($"{featKey}_Right", this.Name, tr, br);
                             context.Features[$"{featKey}_Bottom"] = new LineFeature($"{featKey}_Bottom", this.Name, br, bl);
                             context.Features[$"{featKey}_Left"] = new LineFeature($"{featKey}_Left", this.Name, bl, tl);
-
                             blobIdx++;
                         }
                     }
                 }
-
-                // 4. Opcionális Sub-Pipeline generálás a megtalált foltok köré
+                // Sub-Pipeline generálás
                 if (this.CreateSubContexts && validBlobs.Count > 0)
                 {
                     if (context.SubContexts == null) context.SubContexts = new List<InspectionContext>();
                     context.SubContexts.Clear();
-
                     using (Bitmap globalBmp = overlayOutput.ToBitmap())
                     {
                         foreach (var blob in validBlobs)
@@ -265,19 +292,16 @@ namespace FlexVision
                         }
                     }
                 }
-                // 5. Eredmények mentése
                 stopwatch.Stop();
                 this.LastBlobs = validBlobs;
                 this.FoundBlobCount = validBlobs.Count;
-                this.LastExecutionTime = $"{stopwatch.ElapsedMilliseconds} ms";
+                this.LastExecutionTime = $"{stopwatch.Elapsed.TotalMilliseconds:F2} ms";
                 this.ExecutionTime = this.LastExecutionTime;
                 bool isPass = (this.FoundBlobCount == this.ExpectedBlobCount);
                 this.LastTestResult = isPass ? "✅ PASS" : "❌ FAIL";
                 this.TestResult = this.LastTestResult;
                 this.Status = isPass ? ModuleStatus.Success : ModuleStatus.Failed;
-                // Sub-loop lapozáshoz mentés a CustomData-ba
                 context.CustomData[this.Name + "_Blobs"] = new List<BlobResult>(validBlobs);
-
                 context.CustomData[this.Name + "_Time"] = this.LastExecutionTime;
                 context.CustomData[this.Name + "_Status"] = this.LastTestResult;
                 context.SourceImage?.Dispose();

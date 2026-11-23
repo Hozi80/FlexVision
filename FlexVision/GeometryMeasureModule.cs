@@ -144,8 +144,17 @@ namespace FlexVision
                         if (f1 == null || f2 == null)
                         {
                             allPass = false;
+                            this.EvaluatedResults.Add(new GeometryEvaluatedResult
+                            {
+                                SourceRule = m,
+                                DisplayName = $"{m.Name} [#{s + 1}]",
+                                Operation = m.Operation,
+                                MeasuredValue = 0,
+                                IsPass = false
+                            });
                             continue;
                         }
+
 
                         var eval = EvaluateSingle(m, $"{m.Name} [#{s + 1}]", f1, f2, sDict, grouped, scale);
                         this.EvaluatedResults.Add(eval);
